@@ -1,0 +1,98 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>HUMAN ERROR — Multiplayer</title>
+<style>
+  :root { --bg:#0b0f17; --panel:#131a26; --ink:#e8edf5; --muted:#8b97a8; --green:#2bd479; --pink:#ff2e63; --blue:#38bdf8; --amber:#f5b942; }
+  * { box-sizing: border-box; }
+  html, body { margin:0; height:100%; background:var(--bg); color:var(--ink); font-family:"Segoe UI",system-ui,sans-serif; overflow:hidden; user-select:none; }
+  #wrap { position:relative; width:100vw; height:100vh; display:flex; align-items:center; justify-content:center; }
+  canvas { background:#0e1422; border-radius:6px; box-shadow:0 0 0 1px #1e293b, 0 20px 60px rgba(0,0,0,.6); }
+  #hud { position:absolute; top:0; left:0; right:0; display:flex; justify-content:space-between; padding:16px 22px; pointer-events:none; font-variant-numeric:tabular-nums; }
+  .tag { letter-spacing:.22em; font-size:11px; font-weight:700; color:var(--green); }
+  #title { font-size:20px; font-weight:800; } #title b { color:var(--pink); }
+  #role { margin-top:6px; font-size:13px; font-weight:800; letter-spacing:.1em; padding:3px 10px; border-radius:6px; display:inline-block; }
+  #role.hunter { color:var(--pink); background:rgba(255,46,99,.14); }
+  #role.hider { color:var(--green); background:rgba(43,212,121,.14); }
+  #role.spectator { color:var(--muted); background:rgba(139,151,168,.14); }
+  #timer { font-size:40px; font-weight:800; text-align:right; line-height:1; }
+  #timerLabel { font-size:11px; letter-spacing:.2em; color:var(--muted); text-align:right; }
+  #feed { position:absolute; right:22px; top:96px; display:flex; flex-direction:column; gap:4px; text-align:right; font-size:12px; font-weight:700; color:var(--amber); pointer-events:none; }
+  #glitch { position:absolute; left:50%; top:90px; transform:translateX(-50%); background:var(--amber); color:#1a1205; padding:9px 18px; border-radius:8px; font-weight:800; opacity:0; transition:opacity .15s; }
+  .overlay { position:absolute; inset:0; display:flex; flex-direction:column; align-items:center; justify-content:center; text-align:center; gap:14px; background:rgba(8,11,18,.9); backdrop-filter:blur(3px); padding:24px; }
+  .overlay h1 { font-size:60px; margin:0; font-weight:900; }
+  .overlay h1 span { color:var(--pink); }
+  .overlay h2 { font-size:20px; color:var(--muted); margin:0; font-weight:600; }
+  .overlay p { color:var(--muted); max-width:540px; line-height:1.6; }
+  input { background:#0e1422; border:1px solid #243149; color:var(--ink); padding:12px 14px; border-radius:8px; font-size:15px; font-family:inherit; width:240px; text-align:center; }
+  input:focus { outline:none; border-color:var(--green); }
+  button { background:var(--green); color:#052012; border:0; padding:13px 30px; font-size:15px; font-weight:800; border-radius:10px; cursor:pointer; font-family:inherit; letter-spacing:.03em; }
+  button:hover { filter:brightness(1.08); }
+  button.ghost { background:var(--panel); color:var(--ink); border:1px solid #243149; }
+  .row { display:flex; gap:10px; align-items:center; }
+  .players { display:flex; flex-direction:column; gap:6px; min-width:240px; }
+  .players .pl { background:var(--panel); padding:9px 14px; border-radius:8px; font-weight:600; display:flex; justify-content:space-between; }
+  .code { font-size:34px; font-weight:900; letter-spacing:.15em; color:var(--blue); }
+  .keys { display:flex; gap:16px; flex-wrap:wrap; justify-content:center; }
+  .keycard { background:var(--panel); padding:10px 16px; border-radius:8px; }
+  .keycard b { display:block; font-size:13px; } .keycard span { color:var(--muted); font-size:11px; }
+  .hidden { display:none !important; }
+  .hint { font-size:12px; color:var(--muted); }
+  a { color:var(--blue); }
+</style>
+</head>
+<body>
+<div id="wrap">
+  <canvas id="game" width="960" height="600"></canvas>
+
+  <div id="hud">
+    <div>
+      <div class="tag">ONE OF THEM IS REAL.</div>
+      <div id="title">HUMAN <b>ERROR</b></div>
+      <div id="role" class="spectator">—</div>
+    </div>
+    <div>
+      <div id="timer">90</div>
+      <div id="timerLabel">MULTIPLAYER</div>
+    </div>
+  </div>
+  <div id="feed"></div>
+  <div id="glitch"></div>
+
+  <!-- JOIN -->
+  <div id="joinScreen" class="overlay">
+    <div class="tag">MULTIPLAYER · PROTOTYPE</div>
+    <h1>HUMAN <span>ERROR</span></h1>
+    <h2>Hide in the crowd. One of you is the Hunter.</h2>
+    <input id="nameInput" placeholder="Your name" maxlength="14" />
+    <div class="row">
+      <input id="roomInput" placeholder="Room code (e.g. PARTY)" maxlength="8" />
+      <button id="joinBtn">JOIN</button>
+    </div>
+    <p class="hint">Share the room code with friends — same code = same match. Testing alone? Just join; you'll be the Hunter chasing the bots.</p>
+    <p id="connStatus" class="hint"></p>
+  </div>
+
+  <!-- LOBBY -->
+  <div id="lobbyScreen" class="overlay hidden">
+    <div class="tag">ROOM</div>
+    <div class="code" id="lobbyCode">—</div>
+    <h2>Lobby</h2>
+    <div class="players" id="playerList"></div>
+    <button id="startBtn">START MATCH</button>
+    <p class="hint">One random human becomes the Hunter. Everyone else blends. Bots fill the crowd.</p>
+  </div>
+
+  <!-- RESULT -->
+  <div id="resultScreen" class="overlay hidden">
+    <h1 id="resultTitle">—</h1>
+    <h2 id="resultSub"></h2>
+    <button id="againBtn">BACK TO LOBBY</button>
+  </div>
+</div>
+
+<script src="mp.js"></script>
+</body>
+</html>
