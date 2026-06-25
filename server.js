@@ -9,6 +9,7 @@ const http = require("http");
 const fs = require("fs");
 const path = require("path");
 const crypto = require("crypto");
+const os = require("os");
 
 const PORT = process.env.PORT || 8080;
 const ROOT = __dirname;
@@ -386,7 +387,22 @@ setInterval(() => {
   for (const room of rooms.values()) tick(room, dt);
 }, TICK);
 
-server.listen(PORT, () => {
-  console.log("HUMAN ERROR multiplayer on  http://localhost:" + PORT);
-  console.log("Open it in two browser tabs, join the same room code, press Start.");
+function lanIPs() {
+  const out = [];
+  const ifaces = os.networkInterfaces();
+  for (const name of Object.keys(ifaces)) for (const ni of ifaces[name] || []) {
+    if (ni.family === "IPv4" && !ni.internal) out.push(ni.address);
+  }
+  return out;
+}
+server.listen(PORT, "0.0.0.0", () => {
+  console.log("\n  HUMAN ERROR — multiplayer server running\n");
+  console.log("  This machine:   http://localhost:" + PORT);
+  const ips = lanIPs();
+  if (ips.length) {
+    console.log("  Same-wifi friends, share one of these:");
+    for (const ip of ips) console.log("                  http://" + ip + ":" + PORT);
+  }
+  console.log("  Internet friends:  run  'npm run tunnel'  in another terminal (gives a public link).");
+  console.log("\n  Open the URL, Create a room, share the code, press Start.\n");
 });
