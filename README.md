@@ -1,0 +1,2 @@
+# HUMAN-ERROR-game-prototype-1
+ a multiplayer "hide-in-the-crowd" party game. A map is packed with identical AI-controlled NPCs running looped routines. A few human players are dropped in wearing the same skin; one player is the Hunter. Hiders survive by acting fake — mimicking the NPCs. Humans always out themselves by being too human (flinching, panicking, over-dancing). It's a reverse Turing test as a party game: instantly legible, inherently funny, meme-ready, and thematically about AI vs. humans — which is free press. Now building the deck.
