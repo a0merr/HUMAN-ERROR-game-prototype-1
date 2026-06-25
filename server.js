@@ -134,13 +134,17 @@ function makeCrowdAgent(bot) {
     wpx: 0, wpy: 0, dancePhase: rand(0, 6.28), phase: rand(0, 6.28),
     reacting: false, reactT: 0,
     slipT: rand(2.5, 6), slipping: false, slip: "", slipDur: 0, sdx: 0, sdy: 0,
+    emote: -1, emoteT: 0, emoteCD: rand(4, 12),
     alive: true,
   };
 }
+const N_SKINS = 5, N_EMOTES = 4;
 function newWaypoint(a) { const p = freePoint(); a.wpx = p.x; a.wpy = p.y; }
 
 function updateNPC(a, dt, room) {
   a.phase += dt; a.timer -= dt;
+  if (a.emoteT > 0) a.emoteT -= dt;
+  else { a.emoteCD -= dt; if (a.emoteCD <= 0 && !a.reacting) { a.emote = (Math.random() * N_EMOTES) | 0; a.emoteT = 1.4; a.emoteCD = rand(6, 16); } }
   if (a.reacting) {
     a.reactT -= dt; reaction(a, dt, room);
     if (a.reactT <= 0) { a.reacting = false; a.state = POSE.IDLE; a.timer = rand(0.6, 1.6); }
@@ -234,13 +238,14 @@ function startMatch(room) {
   hunter.role = "hunter";
   for (const p of humans) {
     const fp = freePoint(); p.x = fp.x; p.y = fp.y; p.facing = Math.PI / 2; p.pose = POSE.IDLE; p.phase = Math.random() * 6.28; p.dancePhase = Math.random() * 6.28;
-    p.input = { up: 0, down: 0, left: 0, right: 0, shift: 0, dance: 0 }; p.tagEdge = false;
+    p.input = { up: 0, down: 0, left: 0, right: 0, shift: 0, dance: 0 }; p.tagEdge = false; p.emote = -1; p.emoteT = 0;
   }
   room.npcs = []; room.bots = [];
   for (let i = 0; i < 30; i++) room.npcs.push(makeCrowdAgent(false));
   for (let i = 0; i < 6; i++) room.bots.push(makeCrowdAgent(true));
+  room.skin = (Math.random() * N_SKINS) | 0;
   room.glitch = null; room.glitchCD = rand(5, 8); room.timer = MATCH_SECS; room.state = "playing";
-  broadcast(room, { t: "start" });
+  broadcast(room, { t: "start", skin: room.skin });
 }
 
 function humanHiders(room) { return [...room.players.values()].filter(p => p.role === "hider" && p.alive); }
@@ -291,6 +296,7 @@ function tick(room, dt) {
   for (const p of room.players.values()) {
     if (p.role === "spectator" || !p.alive) continue;
     if (p.stunT > 0) p.stunT = Math.max(0, p.stunT - dt);
+    if (p.emoteT > 0) p.emoteT -= dt;
     const inp = p.input || {};
     let ix = (inp.right ? 1 : 0) - (inp.left ? 1 : 0);
     let iy = (inp.down ? 1 : 0) - (inp.up ? 1 : 0);
@@ -316,8 +322,10 @@ function tick(room, dt) {
 }
 function anyHunterStun(room) { const h = [...room.players.values()].find(p => p.role === "hunter"); return h ? (h.stunT > 0 ? 1 : 0) : 0; }
 function snap(a, kind, id) {
-  return { id, k: kind, x: Math.round(a.x * 10) / 10, y: Math.round(a.y * 10) / 10,
+  const s = { id, k: kind, x: Math.round(a.x * 10) / 10, y: Math.round(a.y * 10) / 10,
     f: Math.round(a.facing * 100) / 100, p: a.pose, ph: Math.round((a.dancePhase || a.phase) * 100) / 100 };
+  if (a.emoteT > 0 && a.emote >= 0) s.e = a.emote;
+  return s;
 }
 
 // ---------- connection handlers ----------
@@ -352,6 +360,7 @@ function onMessage(sock, msg) {
   } else if (!sock._player) return;
   else if (msg.t === "start") { const room = sock._player.room; if (room.state !== "playing") startMatch(room); }
   else if (msg.t === "input") { const p = sock._player; p.input = msg.k || p.input; if (msg.tag) p.tagEdge = true; }
+  else if (msg.t === "emote") { const p = sock._player; if (p.role !== "spectator" && p.alive) { p.emote = clamp(msg.e | 0, 0, N_EMOTES - 1); p.emoteT = 1.6; } }
   else if (msg.t === "again") { const room = sock._player.room; if (room.state === "over") { room.state = "lobby"; for (const pl of room.players.values()) pl.role = "spectator"; sendLobby(room); } }
 }
 function sendLobby(room) {

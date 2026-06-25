@@ -15,7 +15,17 @@ const PILLARS = [
   { x: ARENA.x + ARENA.w*0.12, y: ARENA.y + ARENA.h*0.70, w: 40, h: 40 },
 ];
 const POSE = { IDLE: 0, WALK: 1, DANCE: 2 };
-const SKIN = "#8a93a6", SKIN_HEAD = "#9aa3b6", SKIN_DARK = "#5b6376";
+const SKIN_DARK = "#5b6376";
+// crowd skins (whole lobby wears one per match — keeps everyone identical)
+const SKINS = [
+  { body: "#8a93a6", head: "#9aa3b6", name: "Office Grey" },
+  { body: "#e6b54a", head: "#f2c965", name: "Hazmat" },
+  { body: "#5fb6a8", head: "#74cabb", name: "Android Teal" },
+  { body: "#c56cc0", head: "#d784d2", name: "Party" },
+  { body: "#9aa6b8", head: "#cdd6e3", name: "Ghost" },
+];
+const EMOJI = ["👋", "🕺", "👉", "😂"];
+let crowdSkin = 0;
 
 // ---------- dom ----------
 const $ = id => document.getElementById(id);
@@ -52,7 +62,7 @@ function handle(m) {
     list.innerHTML = m.players.map(p => `<div class="pl"><span>${esc(p.name)}</span><span class="hint">${p.name===myName?"you":""}</span></div>`).join("");
     if (m.state !== "playing") { joinScreen.classList.add("hidden"); lobbyScreen.classList.remove("hidden"); }
   }
-  else if (m.t === "start") { lobbyScreen.classList.add("hidden"); resultScreen.classList.add("hidden"); feedItems = []; renderFeed(); snapPrev = snapCur = null; killcam = null; flash = 0; myStun = 0; hidersLeft = -1; }
+  else if (m.t === "start") { crowdSkin = m.skin || 0; lobbyScreen.classList.add("hidden"); resultScreen.classList.add("hidden"); feedItems = []; renderFeed(); snapPrev = snapCur = null; killcam = null; flash = 0; myStun = 0; hidersLeft = -1; feed("Crowd skin: " + SKINS[crowdSkin].name); }
   else if (m.t === "snap") {
     snapPrev = snapCur; snapCur = m; snapTime = performance.now();
     elTimer.textContent = m.timer;
@@ -96,6 +106,7 @@ addEventListener("keydown", e => {
   keys[k] = true;
   if ([" ", "arrowup", "arrowdown", "arrowleft", "arrowright"].includes(k)) e.preventDefault();
   if (k === " " && myRole === "hunter") tagQueued = true;
+  if (myRole !== "spectator" && k >= "1" && k <= "4") send({ t: "emote", e: parseInt(k, 10) - 1 });
 });
 addEventListener("keyup", e => { keys[e.key.toLowerCase()] = false; });
 
@@ -123,7 +134,8 @@ function drawPerson(b, t) {
   const isHunter = b.k === "hunter";
   const moving = b._moving;
   const dancing = b.p === POSE.DANCE;
-  const bodyCol = isHunter ? "#ff2e63" : SKIN, headCol = isHunter ? "#cfe6ff" : SKIN_HEAD;
+  const sk = SKINS[crowdSkin] || SKINS[0];
+  const bodyCol = isHunter ? "#ff2e63" : sk.body, headCol = isHunter ? "#cfe6ff" : sk.head;
   ctx.save(); ctx.translate(b.x, b.y);
   ctx.fillStyle = "rgba(0,0,0,.28)"; ctx.beginPath(); ctx.ellipse(0,11,9,3.2,0,0,Math.PI*2); ctx.fill();
   const swing = moving ? Math.sin(t*11 + b.id)*4 : 0;
@@ -137,6 +149,12 @@ function drawPerson(b, t) {
   else { ctx.beginPath(); ctx.moveTo(-4,-2+bob); ctx.lineTo(-5,3); ctx.stroke(); ctx.beginPath(); ctx.moveTo(4,-2+bob); ctx.lineTo(5,3); ctx.stroke(); }
   ctx.fillStyle = headCol; ctx.beginPath(); ctx.arc(0,-10+bob,5,0,Math.PI*2); ctx.fill();
   if (isHunter) { ctx.fillStyle = "rgba(10,20,35,.9)"; ctx.save(); ctx.translate(0,-10+bob); ctx.rotate(b.f); roundRect(1,-2.4,4.5,4.8,1.5); ctx.fill(); ctx.restore(); }
+  // emote bubble
+  if (b.e !== undefined && b.e !== null && EMOJI[b.e]) {
+    ctx.font = "16px Segoe UI Emoji, Segoe UI"; ctx.textAlign = "center"; ctx.textBaseline = "middle";
+    ctx.fillText(EMOJI[b.e], 0, -24 + bob);
+    ctx.textBaseline = "alphabetic";
+  }
   ctx.restore();
 }
 
