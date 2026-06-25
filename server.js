@@ -91,13 +91,18 @@ server.on("upgrade", (req, sock) => {
 const W = 960, H = 600, PAD = 40;
 const ARENA = { x: PAD, y: PAD + 30, w: W - PAD * 2, h: H - PAD * 2 - 30 };
 const BODY_R = 11;
-const PILLARS = [
-  { x: ARENA.x + ARENA.w * 0.24, y: ARENA.y + ARENA.h * 0.30, w: 46, h: 46 },
-  { x: ARENA.x + ARENA.w * 0.62, y: ARENA.y + ARENA.h * 0.24, w: 54, h: 40 },
-  { x: ARENA.x + ARENA.w * 0.40, y: ARENA.y + ARENA.h * 0.62, w: 60, h: 44 },
-  { x: ARENA.x + ARENA.w * 0.78, y: ARENA.y + ARENA.h * 0.66, w: 44, h: 56 },
-  { x: ARENA.x + ARENA.w * 0.12, y: ARENA.y + ARENA.h * 0.70, w: 40, h: 40 },
+function PL(fx, fy, w, h) { return { x: ARENA.x + ARENA.w * fx, y: ARENA.y + ARENA.h * fy, w, h }; }
+// map layouts — server picks one per match; clients render the matching one
+const MAPS = [
+  // 0 — Plaza (scattered blocks)
+  [ PL(0.24,0.30,46,46), PL(0.62,0.24,54,40), PL(0.40,0.62,60,44), PL(0.78,0.66,44,56), PL(0.12,0.70,40,40) ],
+  // 1 — Atrium (big center + corner posts)
+  [ PL(0.43,0.40,80,66), PL(0.16,0.20,40,40), PL(0.80,0.20,40,40), PL(0.16,0.74,40,40), PL(0.80,0.74,40,40) ],
+  // 2 — Stacks (tall maze columns)
+  [ PL(0.28,0.26,18,150), PL(0.50,0.26,18,150), PL(0.72,0.26,18,150), PL(0.39,0.60,18,150), PL(0.61,0.60,18,150) ],
 ];
+const N_MAPS = MAPS.length;
+const PILLARS = MAPS[0];   // default for any helper called without a map
 const POSE = { IDLE: 0, WALK: 1, DANCE: 2 };
 const NPC_SPEED = 58, HIDER_SPEED = 140, HUNTER_SPEED = 132, DANCE_DRIFT = 5;
 const MATCH_SECS = 90, TAG_RANGE = 34, TAG_CONE = 1.1, MISS_STUN = 1.4;
@@ -106,28 +111,29 @@ const rand = (a, b) => a + Math.random() * (b - a);
 const clamp = (v, a, b) => (v < a ? a : v > b ? b : v);
 const dist = (ax, ay, bx, by) => Math.hypot(ax - bx, ay - by);
 function lerpAngle(a, b, t) { let d = b - a; while (d > Math.PI) d -= Math.PI * 2; while (d < -Math.PI) d += Math.PI * 2; return a + d * t; }
-function insidePillar(x, y) { for (const p of PILLARS) if (x > p.x - BODY_R && x < p.x + p.w + BODY_R && y > p.y - BODY_R && y < p.y + p.h + BODY_R) return true; return false; }
-function collide(a) {
-  for (const p of PILLARS) {
+function insidePillar(x, y, pillars) { for (const p of (pillars || PILLARS)) if (x > p.x - BODY_R && x < p.x + p.w + BODY_R && y > p.y - BODY_R && y < p.y + p.h + BODY_R) return true; return false; }
+function collide(a, pillars) {
+  for (const p of (pillars || PILLARS)) {
     const cx = clamp(a.x, p.x, p.x + p.w), cy = clamp(a.y, p.y, p.y + p.h);
     const dx = a.x - cx, dy = a.y - cy, d = Math.hypot(dx, dy);
     if (d < BODY_R && d > 0.0001) { a.x = cx + dx / d * BODY_R; a.y = cy + dy / d * BODY_R; }
     else if (d <= 0.0001) a.x = p.x - BODY_R;
   }
 }
-function freePoint() {
+function freePoint(pillars) {
+  pillars = pillars || PILLARS;
   for (let i = 0; i < 30; i++) {
     const x = rand(ARENA.x + 25, ARENA.x + ARENA.w - 25), y = rand(ARENA.y + 25, ARENA.y + ARENA.h - 25);
     let ok = true;
-    for (const p of PILLARS) if (x > p.x - 18 && x < p.x + p.w + 18 && y > p.y - 18 && y < p.y + p.h + 18) { ok = false; break; }
+    for (const p of pillars) if (x > p.x - 18 && x < p.x + p.w + 18 && y > p.y - 18 && y < p.y + p.h + 18) { ok = false; break; }
     if (ok) return { x, y };
   }
   return { x: rand(ARENA.x + 25, ARENA.x + ARENA.w - 25), y: rand(ARENA.y + 25, ARENA.y + ARENA.h - 25) };
 }
 
 let nextId = 1;
-function makeCrowdAgent(bot) {
-  const fp = freePoint();
+function makeCrowdAgent(bot, pillars) {
+  const fp = freePoint(pillars);
   return {
     id: nextId++, kind: bot ? "bot" : "npc",
     x: fp.x, y: fp.y, vx: 0, vy: 0, facing: rand(0, 6.28),
@@ -140,21 +146,22 @@ function makeCrowdAgent(bot) {
   };
 }
 const N_SKINS = 5, N_EMOTES = 4;
-function newWaypoint(a) { const p = freePoint(); a.wpx = p.x; a.wpy = p.y; }
+function newWaypoint(a, pillars) { const p = freePoint(pillars); a.wpx = p.x; a.wpy = p.y; }
 
 function updateNPC(a, dt, room) {
   a.phase += dt; a.timer -= dt;
   if (a.emoteT > 0) a.emoteT -= dt;
   else { a.emoteCD -= dt; if (a.emoteCD <= 0 && !a.reacting) { a.emote = (Math.random() * N_EMOTES) | 0; a.emoteT = 1.4; a.emoteCD = rand(6, 16); } }
+  const pillars = room.pillars;
   if (a.reacting) {
     a.reactT -= dt; reaction(a, dt, room);
     if (a.reactT <= 0) { a.reacting = false; a.state = POSE.IDLE; a.timer = rand(0.6, 1.6); }
-    a.pose = a.state; collide(a); return;
+    a.pose = a.state; collide(a, pillars); return;
   }
   if (a.timer <= 0) {
     const r = Math.random();
     if (r < 0.42) { a.state = POSE.IDLE; a.timer = rand(1.2, 3); }
-    else if (r < 0.78) { a.state = POSE.WALK; newWaypoint(a); a.timer = rand(2, 4); }
+    else if (r < 0.78) { a.state = POSE.WALK; newWaypoint(a, pillars); a.timer = rand(2, 4); }
     else { a.state = POSE.DANCE; a.timer = rand(1.6, 3.6); }
   }
   if (a.state === POSE.IDLE) { a.vx = a.vy = 0; }
@@ -165,7 +172,7 @@ function updateNPC(a, dt, room) {
   } else { a.dancePhase += dt * 8; a.vx = Math.cos(a.dancePhase) * DANCE_DRIFT; a.vy = Math.sin(a.dancePhase * 1.3) * DANCE_DRIFT; }
   a.x = clamp(a.x + a.vx * dt, ARENA.x + BODY_R, ARENA.x + ARENA.w - BODY_R);
   a.y = clamp(a.y + a.vy * dt, ARENA.y + BODY_R, ARENA.y + ARENA.h - BODY_R);
-  collide(a); a.pose = a.state;
+  collide(a, pillars); a.pose = a.state;
 }
 const SLIPS = ["sprint", "flinch", "overdance", "bunch"];
 function updateBot(a, dt, room) {
@@ -182,7 +189,7 @@ function updateBot(a, dt, room) {
     else { a.pose = POSE.WALK; a.x += a.sdx * 70 * dt; a.y += a.sdy * 70 * dt; }
     a.x = clamp(a.x, ARENA.x + BODY_R, ARENA.x + ARENA.w - BODY_R);
     a.y = clamp(a.y, ARENA.y + BODY_R, ARENA.y + ARENA.h - BODY_R);
-    collide(a);
+    collide(a, room.pillars);
     if (a.slipDur <= 0) { a.slipping = false; a.slipT = rand(2.8, 6.5); }
     return;
   }
@@ -237,16 +244,18 @@ function startMatch(room) {
   humans.forEach(p => { p.role = "hider"; p.alive = true; p.score = 0; p.stunT = 0; });
   const hunter = humans[(Math.random() * humans.length) | 0];
   hunter.role = "hunter";
+  room.map = (Math.random() * N_MAPS) | 0;
+  room.pillars = MAPS[room.map];
   for (const p of humans) {
-    const fp = freePoint(); p.x = fp.x; p.y = fp.y; p.facing = Math.PI / 2; p.pose = POSE.IDLE; p.phase = Math.random() * 6.28; p.dancePhase = Math.random() * 6.28;
+    const fp = freePoint(room.pillars); p.x = fp.x; p.y = fp.y; p.facing = Math.PI / 2; p.pose = POSE.IDLE; p.phase = Math.random() * 6.28; p.dancePhase = Math.random() * 6.28;
     p.input = { up: 0, down: 0, left: 0, right: 0, shift: 0, dance: 0 }; p.tagEdge = false; p.emote = -1; p.emoteT = 0;
   }
   room.npcs = []; room.bots = [];
-  for (let i = 0; i < 30; i++) room.npcs.push(makeCrowdAgent(false));
-  for (let i = 0; i < 6; i++) room.bots.push(makeCrowdAgent(true));
+  for (let i = 0; i < 30; i++) room.npcs.push(makeCrowdAgent(false, room.pillars));
+  for (let i = 0; i < 6; i++) room.bots.push(makeCrowdAgent(true, room.pillars));
   room.skin = (Math.random() * N_SKINS) | 0;
   room.glitch = null; room.glitchCD = rand(5, 8); room.timer = MATCH_SECS; room.state = "playing";
-  broadcast(room, { t: "start", skin: room.skin });
+  broadcast(room, { t: "start", skin: room.skin, map: room.map });
 }
 
 function humanHiders(room) { return [...room.players.values()].filter(p => p.role === "hider" && p.alive); }
@@ -309,7 +318,7 @@ function tick(room, dt) {
     } else { p.vx = p.vy = 0; if (!isHunter && inp.dance) { p.pose = POSE.DANCE; p.dancePhase += dt * 8; } else p.pose = POSE.IDLE; }
     p.x = clamp(p.x + p.vx * dt, ARENA.x + BODY_R, ARENA.x + ARENA.w - BODY_R);
     p.y = clamp(p.y + p.vy * dt, ARENA.y + BODY_R, ARENA.y + ARENA.h - BODY_R);
-    p.phase += dt; collide(p);
+    p.phase += dt; collide(p, room.pillars);
     if (isHunter && p.tagEdge) { p.tagEdge = false; doTag(room, p); }
   }
   // snapshot

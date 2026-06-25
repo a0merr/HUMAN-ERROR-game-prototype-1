@@ -48,6 +48,7 @@ addEventListener("keydown", e => {
   keys[k] = true;
   if ([" ","arrowup","arrowdown","arrowleft","arrowright"].includes(k)) e.preventDefault();
   if (k === "q") tryDecoy();
+  if (k === "p") { try { const a = document.createElement("a"); a.download = "human-error-" + Date.now() + ".png"; a.href = cv.toDataURL("image/png"); a.click(); } catch (e) {} }
 });
 addEventListener("keyup", e => { keys[e.key.toLowerCase()] = false; });
 
