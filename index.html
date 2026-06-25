@@ -118,6 +118,26 @@
   .hidden { display: none !important; }
   .hint { font-size: 12px; color: var(--muted); margin-top: 4px; }
   .tipline { color: var(--amber); font-weight: 600; }
+
+  #waveTag {
+    margin-top: 6px; font-size: 12px; font-weight: 800; letter-spacing: .18em;
+    color: var(--blue); background: rgba(56,189,248,.12);
+    display: inline-block; padding: 3px 10px; border-radius: 6px;
+  }
+  #feed {
+    position: absolute; right: 22px; top: 96px; pointer-events: none;
+    display: flex; flex-direction: column; gap: 4px; text-align: right;
+    font-size: 12px; font-weight: 700; color: var(--pink); letter-spacing: .03em;
+  }
+  .perkCard {
+    background: var(--panel); color: var(--ink); border: 1px solid #243149;
+    border-bottom-width: 3px; margin: 0; padding: 16px 18px; border-radius: 10px;
+    cursor: pointer; width: 200px; min-height: 110px; text-align: left;
+    display: flex; flex-direction: column; gap: 8px; transition: transform .08s, border-color .08s;
+  }
+  .perkCard:hover { transform: translateY(-3px); border-color: var(--green); filter: none; background: #18212f; }
+  .perkCard b { color: var(--green); font-size: 15px; }
+  .perkCard span { color: var(--muted); font-size: 12px; line-height: 1.4; font-weight: 500; }
 </style>
 </head>
 <body>
@@ -129,13 +149,15 @@
     <div>
       <div class="tag">ONE OF THEM IS REAL.</div>
       <div id="title">HUMAN <b>ERROR</b></div>
+      <div id="waveTag">WAVE 1</div>
     </div>
     <div>
-      <div id="timer">90</div>
+      <div id="timer">40</div>
       <div id="timerLabel">SURVIVE</div>
     </div>
   </div>
 
+  <div id="feed"></div>
   <div id="glitch"></div>
 
   <div id="suspWrap">
@@ -157,10 +179,19 @@
       <div class="keycard"><b>Hold F</b><span>Dance (match crowd)</span></div>
       <div class="keycard"><b>Space / E</b><span>React to glitch</span></div>
     </div>
-    <p class="tipline">⚠ Tells that get you caught: sprinting, standing still while the crowd dances,
-       ignoring glitches. Copy the crowd. Hide behind pillars to break the Hunter's line of sight.</p>
+    <p class="tipline">⚠ Survive escalating waves. Each clear, grab a perk. More Hunters every wave, tighter scans.
+       Copy the crowd, use pillars for cover, let the dumb-human bots take the heat.</p>
     <button id="startBtn">DROP IN</button>
-    <p class="hint">Solo-playable: a bot Hunter, plus 3 dumb-human AI hiders who keep slipping and getting busted. Let them take the heat.</p>
+    <p class="hint">Endless wave roguelite · perks · multiple AI Hunters · best run saved locally.</p>
+  </div>
+
+  <!-- PERK SELECT -->
+  <div id="perkScreen" class="overlay hidden">
+    <div class="tag" style="color:var(--green)">WAVE CLEARED</div>
+    <h1 id="perkWave" style="font-size:42px">WAVE 1 CLEARED</h1>
+    <h2>Choose a perk</h2>
+    <div id="perkOpts" class="keys"></div>
+    <p class="hint">Perks stack across the whole run. Pick the one that fixes how you keep dying.</p>
   </div>
 
   <!-- END -->
