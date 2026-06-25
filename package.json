@@ -1,11 +1,13 @@
 {
   "name": "human-error",
-  "version": "0.1.0",
-  "description": "HUMAN ERROR — hide-in-the-crowd party game prototype (zero-dependency multiplayer server).",
+  "version": "0.2.0",
+  "description": "HUMAN ERROR — hide-in-the-crowd party game. Unified zero-dependency engine shared by the solo wave-roguelite and the authoritative multiplayer server.",
   "private": true,
+  "type": "module",
   "scripts": {
-    "start": "node server.js",
-    "tunnel": "npx -y localtunnel --port 8080"
+    "start": "node server.mjs",
+    "tunnel": "npx -y localtunnel --port 8080",
+    "check": "node --check server.mjs && node test/headless.mjs"
   },
   "engines": {
     "node": ">=18"

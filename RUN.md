@@ -1,29 +1,37 @@
 # HUMAN ERROR — how to run
 
-A hide-in-the-crowd party game prototype. Two ways to play:
+A hide-in-the-crowd party game prototype. One **unified zero-dependency engine**
+(`engine/*.mjs`) drives both modes:
 
-- **Solo (offline):** just open `index.html` in a browser. Wave roguelite vs AI Hunters.
-- **Multiplayer:** run the server (below), then play with friends.
+- **Solo:** wave roguelite vs AI Hunters — open `/solo`.
+- **Multiplayer:** one human Hunter vs hiders + AI crowd — open `/`.
 
-No build step. No npm install required for the game itself — the server is zero-dependency Node.
+No build step, no npm install, no bundler. The game is native ES modules, so it
+runs through the bundled Node server (modules need `http://`, not `file://`).
 
 ---
 
-## 1. Solo (no server)
+## 1. Start the server
 
-Double-click **`index.html`**, or open it in Chrome/Edge. That's it.
+Requires **Node.js 18+** ([nodejs.org](https://nodejs.org)).
+
+```bash
+npm start          # or:  node server.mjs
+```
+
+Then open:
+
+- **Solo:** http://localhost:8080/solo
+- **Multiplayer:** http://localhost:8080/
+
+> `npm run check` runs `node --check server.mjs` + the headless engine tests
+> (`test/headless.mjs`) — a fast confidence gate after edits.
 
 ---
 
 ## 2. Multiplayer — same machine / same wifi
 
-Requires **Node.js 18+** ([nodejs.org](https://nodejs.org)).
-
-```bash
-npm start          # or:  node server.js
-```
-
-The server prints the URLs to use, e.g.:
+With the server running (`npm start`), it prints the URLs to use, e.g.:
 
 ```
 This machine:   http://localhost:8080
