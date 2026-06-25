@@ -7,13 +7,19 @@ const W = cv.width, H = cv.height;
 const PAD = 40;
 const ARENA = { x: PAD, y: PAD + 30, w: W - PAD*2, h: H - PAD*2 - 30 };
 const BODY_R = 11;
-const PILLARS = [
-  { x: ARENA.x + ARENA.w*0.24, y: ARENA.y + ARENA.h*0.30, w: 46, h: 46 },
-  { x: ARENA.x + ARENA.w*0.62, y: ARENA.y + ARENA.h*0.24, w: 54, h: 40 },
-  { x: ARENA.x + ARENA.w*0.40, y: ARENA.y + ARENA.h*0.62, w: 60, h: 44 },
-  { x: ARENA.x + ARENA.w*0.78, y: ARENA.y + ARENA.h*0.66, w: 44, h: 56 },
-  { x: ARENA.x + ARENA.w*0.12, y: ARENA.y + ARENA.h*0.70, w: 40, h: 40 },
+const PL = (fx, fy, w, h) => ({ x: ARENA.x + ARENA.w*fx, y: ARENA.y + ARENA.h*fy, w, h });
+const MAPS = [
+  [ PL(0.24,0.30,46,46), PL(0.62,0.24,54,40), PL(0.40,0.62,60,44), PL(0.78,0.66,44,56), PL(0.12,0.70,40,40) ],
+  [ PL(0.43,0.40,80,66), PL(0.16,0.20,40,40), PL(0.80,0.20,40,40), PL(0.16,0.74,40,40), PL(0.80,0.74,40,40) ],
+  [ PL(0.28,0.26,18,150), PL(0.50,0.26,18,150), PL(0.72,0.26,18,150), PL(0.39,0.60,18,150), PL(0.61,0.60,18,150) ],
 ];
+const THEMES = [
+  { name: "Plaza",  floor: "#0e1422", grid: "#172033", pillar: "#1c2942", edge: "#2c3e5e" },
+  { name: "Atrium", floor: "#0e1a16", grid: "#15271f", pillar: "#1b3328", edge: "#2c5040" },
+  { name: "Stacks", floor: "#140e1f", grid: "#211733", pillar: "#2a1c42", edge: "#43305e" },
+];
+let curMap = 0;
+const PILLARS = MAPS[0];
 const POSE = { IDLE: 0, WALK: 1, DANCE: 2 };
 const SKIN_DARK = "#5b6376";
 // crowd skins (whole lobby wears one per match — keeps everyone identical)
@@ -36,8 +42,33 @@ const elRole = $("role"), elTimer = $("timer"), elTimerLabel = $("timerLabel"), 
 let ws = null, myId = null, myName = "", myRole = "spectator";
 let snapPrev = null, snapCur = null, snapTime = 0;   // interpolation buffers
 let glitchOff = 0, feedItems = [];
-let hidersLeft = -1, myStun = 0;
-let killcam = null, flash = 0;
+let hidersLeft = -1, myStun = 0, prevStun = 0;
+let killcam = null, flash = 0, shake = 0, particles = [];
+
+// ---------- audio ----------
+let actx = null;
+function audioOn() { if (!actx) { try { actx = new (window.AudioContext || window.webkitAudioContext)(); } catch (e) {} } }
+function beep(freq, dur, type = "sine", vol = 0.06) {
+  if (!actx) return;
+  const o = actx.createOscillator(), g = actx.createGain();
+  o.type = type; o.frequency.value = freq; o.connect(g); g.connect(actx.destination);
+  const t = actx.currentTime; g.gain.setValueAtTime(vol, t); g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+  o.start(t); o.stop(t + dur);
+}
+function sfx(name) {
+  if (!actx) return;
+  if (name === "tag") { beep(523, 0.08, "triangle", 0.06); setTimeout(() => beep(784, 0.14, "triangle", 0.06), 70); }
+  else if (name === "caughtMe") { beep(220, 0.12, "sawtooth", 0.08); setTimeout(() => beep(130, 0.28, "sawtooth", 0.07), 110); }
+  else if (name === "stun") { beep(150, 0.18, "square", 0.07); }
+  else if (name === "taunt") { beep(660, 0.07, "triangle", 0.05); }
+  else if (name === "glitch") { beep(170, 0.25, "sawtooth", 0.08); }
+  else if (name === "start") { beep(440, 0.09, "triangle", 0.05); setTimeout(() => beep(660, 0.12, "triangle", 0.05), 90); }
+  else if (name === "win") { beep(523, 0.1, "triangle", 0.06); setTimeout(() => beep(784, 0.18, "triangle", 0.06), 110); }
+  else if (name === "lose") { beep(330, 0.12, "sawtooth", 0.06); setTimeout(() => beep(196, 0.25, "sawtooth", 0.06), 120); }
+}
+function burst(x, y, color, n = 18) {
+  for (let i = 0; i < n; i++) { const a = Math.random() * 6.28, s = 40 + Math.random() * 200; particles.push({ x, y, vx: Math.cos(a) * s, vy: Math.sin(a) * s, life: 0.4 + Math.random() * 0.5, color }); }
+}
 
 // ---------- websocket ----------
 function connect(action, name, room) {
@@ -62,25 +93,28 @@ function handle(m) {
     list.innerHTML = m.players.map(p => `<div class="pl"><span>${esc(p.name)}</span><span class="hint">${p.name===myName?"you":""}</span></div>`).join("");
     if (m.state !== "playing") { joinScreen.classList.add("hidden"); lobbyScreen.classList.remove("hidden"); }
   }
-  else if (m.t === "start") { crowdSkin = m.skin || 0; lobbyScreen.classList.add("hidden"); resultScreen.classList.add("hidden"); feedItems = []; renderFeed(); snapPrev = snapCur = null; killcam = null; flash = 0; myStun = 0; hidersLeft = -1; feed("Crowd skin: " + SKINS[crowdSkin].name); }
+  else if (m.t === "start") { crowdSkin = m.skin || 0; curMap = m.map || 0; lobbyScreen.classList.add("hidden"); resultScreen.classList.add("hidden"); feedItems = []; renderFeed(); snapPrev = snapCur = null; killcam = null; flash = 0; shake = 0; particles = []; myStun = prevStun = 0; hidersLeft = -1; feed("Map: " + THEMES[curMap].name + " · Skin: " + SKINS[crowdSkin].name); sfx("start"); }
   else if (m.t === "snap") {
     snapPrev = snapCur; snapCur = m; snapTime = performance.now();
     elTimer.textContent = m.timer;
     hidersLeft = (m.hidersLeft === undefined) ? -1 : m.hidersLeft;
     const me = m.bodies.find(b => b.id === myId);
     setRole(me ? (me.k === "hunter" ? "hunter" : "hider") : "spectator");
-    if (myRole === "hunter") { myStun = m.hunterStun ? 1 : 0; elTimerLabel.textContent = hidersLeft > 0 ? "HUMANS LEFT: " + hidersLeft : "TAG THE BOTS"; }
+    if (myRole === "hunter") { myStun = m.hunterStun ? 1 : 0; if (myStun && !prevStun) { sfx("stun"); shake = Math.max(shake, 7); } prevStun = myStun; elTimerLabel.textContent = hidersLeft > 0 ? "HUMANS LEFT: " + hidersLeft : "TAG THE BOTS"; }
     else if (myRole === "hider") elTimerLabel.textContent = "SURVIVE" + (hidersLeft > 0 ? " · " + hidersLeft + " LEFT" : "");
     else elTimerLabel.textContent = "SPECTATING" + (hidersLeft > 0 ? " · " + hidersLeft + " LEFT" : "");
   }
-  else if (m.t === "glitch") { elGlitch.textContent = m.name; elGlitch.style.opacity = "1"; glitchOff = 2.2; }
+  else if (m.t === "glitch") { elGlitch.textContent = m.name; elGlitch.style.opacity = "1"; glitchOff = 2.2; sfx("glitch"); }
   else if (m.t === "event") { feed(m.msg); }
   else if (m.t === "caught") {
-    flash = 0.6;
-    if (m.id === myId) { killcam = { x: m.x, y: m.y, t: 0, dur: 2.0 }; }   // it was you → kill-cam
+    flash = 0.6; shake = Math.max(shake, 9); burst(m.x, m.y, "#ff2e63", 24);
+    if (m.id === myId) { killcam = { x: m.x, y: m.y, t: 0, dur: 2.0 }; sfx("caughtMe"); }
+    else sfx("tag");
   }
   else if (m.t === "over") {
     resultScreen.classList.remove("hidden");
+    const iWon = (myRole === "hider" && m.winner === "hiders") || (myRole === "hunter" && m.winner === "hunter");
+    sfx(iWon ? "win" : "lose");
     const win = m.winner === "hunter" ? "HUNTER WINS" : "HIDERS SURVIVE";
     $("resultTitle").innerHTML = win;
     $("resultTitle").style.color = m.winner === "hunter" ? "var(--pink)" : "var(--green)";
@@ -106,8 +140,18 @@ addEventListener("keydown", e => {
   keys[k] = true;
   if ([" ", "arrowup", "arrowdown", "arrowleft", "arrowright"].includes(k)) e.preventDefault();
   if (k === " " && myRole === "hunter") tagQueued = true;
-  if (myRole !== "spectator" && k >= "1" && k <= "4") send({ t: "emote", e: parseInt(k, 10) - 1 });
+  if (myRole !== "spectator" && k >= "1" && k <= "4") { send({ t: "emote", e: parseInt(k, 10) - 1 }); sfx("taunt"); }
+  if (k === "p") screenshot();
 });
+function screenshot() {
+  try {
+    const a = document.createElement("a");
+    a.download = "human-error-" + Date.now() + ".png";
+    a.href = cv.toDataURL("image/png");
+    a.click();
+    feed("📸 Screenshot saved");
+  } catch (e) {}
+}
 addEventListener("keyup", e => { keys[e.key.toLowerCase()] = false; });
 
 setInterval(() => {
@@ -181,17 +225,19 @@ function frame(ts) {
   ctx.clearRect(0,0,W,H);
 
   ctx.save();
+  if (shake > 0.2) ctx.translate((Math.random()*2-1)*shake, (Math.random()*2-1)*shake);
   if (killcam) {
     const e = Math.min(1, killcam.t/0.5), ez = 1-Math.pow(1-e,3), zoom = 1+1.6*ez;
     ctx.translate(W/2,H/2); ctx.scale(zoom,zoom); ctx.translate(-killcam.x,-killcam.y);
   }
 
-  // floor + grid
-  ctx.fillStyle = "#0e1422"; ctx.fillRect(ARENA.x,ARENA.y,ARENA.w,ARENA.h);
-  ctx.strokeStyle = "#172033"; ctx.lineWidth = 1;
+  // floor + grid (themed per map)
+  const th = THEMES[curMap] || THEMES[0];
+  ctx.fillStyle = th.floor; ctx.fillRect(ARENA.x,ARENA.y,ARENA.w,ARENA.h);
+  ctx.strokeStyle = th.grid; ctx.lineWidth = 1;
   for (let gx=ARENA.x; gx<=ARENA.x+ARENA.w; gx+=40){ ctx.beginPath(); ctx.moveTo(gx,ARENA.y); ctx.lineTo(gx,ARENA.y+ARENA.h); ctx.stroke(); }
   for (let gy=ARENA.y; gy<=ARENA.y+ARENA.h; gy+=40){ ctx.beginPath(); ctx.moveTo(ARENA.x,gy); ctx.lineTo(ARENA.x+ARENA.w,gy); ctx.stroke(); }
-  for (const p of PILLARS) { ctx.fillStyle="#1c2942"; roundRect(p.x,p.y,p.w,p.h,6); ctx.fill(); ctx.strokeStyle="#2c3e5e"; ctx.lineWidth=2; ctx.stroke(); }
+  for (const p of (MAPS[curMap] || PILLARS)) { ctx.fillStyle=th.pillar; roundRect(p.x,p.y,p.w,p.h,6); ctx.fill(); ctx.strokeStyle=th.edge; ctx.lineWidth=2; ctx.stroke(); }
   ctx.strokeStyle = "#243149"; ctx.lineWidth = 2; ctx.strokeRect(ARENA.x,ARENA.y,ARENA.w,ARENA.h);
 
   const bodies = interpBodies();
@@ -213,6 +259,10 @@ function frame(ts) {
       ctx.beginPath(); ctx.moveTo(me.x, me.y); ctx.arc(me.x, me.y, rng, me.f - 0.55, me.f + 0.55); ctx.closePath(); ctx.stroke();
     }
   }
+
+  // particles (world space)
+  for (const p of particles) { ctx.globalAlpha = Math.max(0, Math.min(1, p.life)); ctx.fillStyle = p.color; ctx.fillRect(p.x, p.y, 3, 3); }
+  ctx.globalAlpha = 1;
 
   // kill-cam highlight ring on the busted body (world space)
   if (killcam) {
@@ -245,6 +295,10 @@ function frame(ts) {
     ctx.fillText("STUNNED — wrong target", W/2, H - 90); ctx.restore();
   }
 
+  // decay shake + particles
+  shake *= 0.86;
+  if (particles.length) { for (const p of particles) { p.x += p.vx/60; p.y += p.vy/60; p.vx *= 0.92; p.vy *= 0.92; p.life -= 1/60; } particles = particles.filter(p => p.life > 0); }
+
   // glitch banner fade
   if (glitchOff > 0) { glitchOff -= 1/60; if (glitchOff <= 0) elGlitch.style.opacity = "0"; }
   // feed fade
@@ -257,12 +311,13 @@ requestAnimationFrame(frame);
 // ---------- ui buttons ----------
 function curName() { return $("nameInput").value.trim() || "Player"; }
 $("quickBtn").addEventListener("click", () => {
-  connect({ t: "quick", name: curName() });
+  audioOn(); connect({ t: "quick", name: curName() });
 });
 $("createBtn").addEventListener("click", () => {
-  connect({ t: "create", name: curName() });
+  audioOn(); connect({ t: "create", name: curName() });
 });
 $("joinBtn").addEventListener("click", () => {
+  audioOn();
   const room = $("roomInput").value.trim().toUpperCase().replace(/[^A-Z0-9]/g, "");
   if (!room) { $("connStatus").textContent = "Enter a room code, or Create Room."; return; }
   connect({ t: "join", name: curName(), room });
