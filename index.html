@@ -1,0 +1,179 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>HUMAN ERROR — Prototype 1</title>
+<style>
+  :root {
+    --bg: #0b0f17;
+    --panel: #131a26;
+    --ink: #e8edf5;
+    --muted: #8b97a8;
+    --green: #2bd479;
+    --pink: #ff2e63;
+    --blue: #38bdf8;
+    --amber: #f5b942;
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; height: 100%;
+    background: var(--bg);
+    color: var(--ink);
+    font-family: "Segoe UI", system-ui, sans-serif;
+    overflow: hidden;
+    user-select: none;
+  }
+  #wrap {
+    position: relative;
+    width: 100vw; height: 100vh;
+    display: flex; align-items: center; justify-content: center;
+  }
+  canvas {
+    background: #0e1422;
+    display: block;
+    box-shadow: 0 0 0 1px #1e293b, 0 20px 60px rgba(0,0,0,.6);
+    border-radius: 6px;
+  }
+
+  /* HUD */
+  #hud {
+    position: absolute; top: 0; left: 0; right: 0;
+    display: flex; justify-content: space-between; align-items: flex-start;
+    padding: 16px 22px; pointer-events: none;
+    font-variant-numeric: tabular-nums;
+  }
+  .tag { letter-spacing: .22em; font-size: 11px; font-weight: 700; color: var(--green); }
+  #title { font-size: 20px; font-weight: 800; margin-top: 2px; }
+  #title b { color: var(--pink); }
+  #timer { font-size: 40px; font-weight: 800; line-height: 1; text-align: right; }
+  #timerLabel { font-size: 11px; letter-spacing: .2em; color: var(--muted); text-align: right; }
+
+  /* suspicion meter */
+  #suspWrap {
+    position: absolute; left: 50%; bottom: 70px; transform: translateX(-50%);
+    width: 360px; pointer-events: none; text-align: center;
+  }
+  #suspLabel { font-size: 11px; letter-spacing: .25em; color: var(--muted); margin-bottom: 6px; }
+  #suspBar {
+    height: 14px; width: 100%; background: #1b2536; border-radius: 8px; overflow: hidden;
+    box-shadow: inset 0 0 0 1px #263349;
+  }
+  #suspFill {
+    height: 100%; width: 0%;
+    background: linear-gradient(90deg, var(--green), var(--amber) 55%, var(--pink));
+    transition: width .08s linear;
+  }
+
+  /* glitch banner */
+  #glitch {
+    position: absolute; left: 50%; top: 92px; transform: translateX(-50%);
+    background: var(--amber); color: #1a1205;
+    padding: 10px 20px; border-radius: 8px; font-weight: 800;
+    letter-spacing: .04em; opacity: 0; transition: opacity .15s;
+    box-shadow: 0 8px 24px rgba(245,185,66,.35); text-align: center;
+  }
+  #glitch small { display: block; font-weight: 600; opacity: .8; font-size: 12px; margin-top: 2px; }
+
+  /* overlays */
+  .overlay {
+    position: absolute; inset: 0; display: flex; flex-direction: column;
+    align-items: center; justify-content: center; text-align: center;
+    background: rgba(8,11,18,.86); backdrop-filter: blur(3px); gap: 14px;
+    padding: 24px;
+  }
+  .overlay h1 { font-size: 64px; margin: 0; font-weight: 900; letter-spacing: -.02em; }
+  .overlay h2 { font-size: 22px; margin: 0; color: var(--muted); font-weight: 600; }
+  .overlay p { max-width: 560px; color: var(--muted); line-height: 1.6; margin: 6px 0; }
+  .overlay .keys { display: flex; gap: 24px; flex-wrap: wrap; justify-content: center; margin: 8px 0; }
+  .keycard { background: var(--panel); padding: 12px 18px; border-radius: 8px; min-width: 120px; }
+  .keycard b { display: block; color: var(--ink); font-size: 14px; }
+  .keycard span { color: var(--muted); font-size: 12px; }
+  kbd {
+    background: #1e293b; border: 1px solid #334155; border-bottom-width: 3px;
+    border-radius: 5px; padding: 2px 8px; font-family: inherit; font-weight: 700; font-size: 13px;
+  }
+  button {
+    margin-top: 10px; background: var(--green); color: #052012; border: 0;
+    padding: 14px 34px; font-size: 16px; font-weight: 800; border-radius: 10px;
+    cursor: pointer; letter-spacing: .03em; font-family: inherit;
+  }
+  button:hover { filter: brightness(1.08); }
+  .win h1 { color: var(--green); }
+  .lose h1 { color: var(--pink); }
+  #vignette {
+    position: absolute; inset: 0; pointer-events: none; opacity: 0;
+    border-radius: 6px; transition: opacity .12s;
+    box-shadow: inset 0 0 120px 30px rgba(255,46,99,.55);
+  }
+  #endStats {
+    display: flex; gap: 14px; margin: 4px 0 2px; flex-wrap: wrap; justify-content: center;
+  }
+  #endStats span {
+    background: var(--panel); padding: 10px 16px; border-radius: 8px;
+    font-size: 12px; color: var(--muted); letter-spacing: .04em;
+    display: flex; flex-direction: column; gap: 2px; min-width: 92px;
+  }
+  #endStats b { color: var(--ink); font-size: 19px; }
+  .hidden { display: none !important; }
+  .hint { font-size: 12px; color: var(--muted); margin-top: 4px; }
+  .tipline { color: var(--amber); font-weight: 600; }
+</style>
+</head>
+<body>
+<div id="wrap">
+  <canvas id="game" width="960" height="600"></canvas>
+  <div id="vignette"></div>
+
+  <div id="hud">
+    <div>
+      <div class="tag">ONE OF THEM IS REAL.</div>
+      <div id="title">HUMAN <b>ERROR</b></div>
+    </div>
+    <div>
+      <div id="timer">90</div>
+      <div id="timerLabel">SURVIVE</div>
+    </div>
+  </div>
+
+  <div id="glitch"></div>
+
+  <div id="suspWrap">
+    <div id="suspLabel">HUNTER SUSPICION</div>
+    <div id="suspBar"><div id="suspFill"></div></div>
+  </div>
+
+  <!-- START -->
+  <div id="startScreen" class="overlay">
+    <div class="tag">GREENLIGHT PROTOTYPE · 01</div>
+    <h1>HUMAN <span style="color:var(--pink)">ERROR</span></h1>
+    <h2>Blend in. Act fake. Don't get caught.</h2>
+    <p>You are <b style="color:var(--green)">one human</b> hidden in a crowd of identical AI NPCs.
+       The <b style="color:var(--pink)">Hunter</b> scans the crowd for the one body acting <i>human</i>.
+       Survive 90 seconds.</p>
+    <div class="keys">
+      <div class="keycard"><b>WASD / Arrows</b><span>Move</span></div>
+      <div class="keycard"><b>Hold Shift</b><span>Slow “NPC” walk</span></div>
+      <div class="keycard"><b>Hold F</b><span>Dance (match crowd)</span></div>
+      <div class="keycard"><b>Space / E</b><span>React to glitch</span></div>
+    </div>
+    <p class="tipline">⚠ Tells that get you caught: sprinting, standing still while the crowd dances,
+       ignoring glitches. Copy the crowd. Hide behind pillars to break the Hunter's line of sight.</p>
+    <button id="startBtn">DROP IN</button>
+    <p class="hint">Bot Hunter included — fully playable solo. Multiplayer netcode comes later.</p>
+  </div>
+
+  <!-- END -->
+  <div id="endScreen" class="overlay hidden">
+    <h1 id="endTitle">CAUGHT</h1>
+    <h2 id="endSub"></h2>
+    <div id="endStats"></div>
+    <p id="endFlavor"></p>
+    <button id="againBtn">ONE MORE ROUND</button>
+    <p class="hint">Streamers stay live for hours on this loop. That's the bet.</p>
+  </div>
+</div>
+
+<script src="game.js"></script>
+</body>
+</html>
