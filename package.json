@@ -1,0 +1,13 @@
+{
+  "name": "human-error",
+  "version": "0.1.0",
+  "description": "HUMAN ERROR — hide-in-the-crowd party game prototype (zero-dependency multiplayer server).",
+  "private": true,
+  "scripts": {
+    "start": "node server.js",
+    "tunnel": "npx -y localtunnel --port 8080"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
