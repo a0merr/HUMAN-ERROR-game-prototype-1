@@ -8,36 +8,59 @@ This repo is a working, end-to-end **prototype** built to prove the joke (the de
 
 ---
 
-## What's built
+## Architecture — one engine, two modes
 
-**Solo mode** — `index.html` + `game.js` (double-click, runs offline)
-- Endless **wave roguelite**: survive 40s, clear a wave, pick a stacking **perk**, face harder waves.
-- **Multiple AI Hunters** (1 → 4) that scan a line-of-sight cone, lock on, and creep in to inspect — purely on *behavior*, never identity.
-- **Blend mechanic**: match the crowd's pose/speed, hold Shift to walk at NPC speed, hide behind cover. Sprint or stand out → suspicion spikes.
-- **Glitch events** (fire alarm / cash drop / freeze), **dumb-human bots** that visibly slip, **kill-cam** on capture, **score + best run** saved locally.
+The whole game is a **unified, zero-dependency ES-module engine**. The solo game
+and the authoritative multiplayer server import the *same* simulation code, so
+the crowd, NPC routines, bot slips, glitches, collision and line-of-sight behave
+identically everywhere — fix a bug once, it's fixed in both.
 
-**Multiplayer** — `server.js` + `mp.html` + `mp.js` (run the server)
-- **Zero-dependency** Node server (hand-rolled WebSocket, no npm install) with a **server-authoritative** 20Hz crowd sim.
-- **Quick Play** matchmaking + **private rooms** with server-minted unique codes (no collisions at scale; capacity-capped).
-- One random human is the **Hunter**; the rest blend. NPC crowd + slipping bots fill the scene. Hunter presses **Space** to tag the body in front: catch a human/bot, or whiff an NPC and get **stunned**.
-- **3 maps** (Plaza / Atrium / Stacks) + **5 crowd skins** + **taunt emotes** (1–4) for clip variety and meme surface.
-- Catch **kill-cam**, screen flash, **"HUMANS LEFT: N"** stakes, killfeed, audio + juice.
-- Playable over **LAN** out of the box; **internet** via one tunnel command.
+```
+engine/      shared, DOM-free sim (runs in browser AND Node)
+  math.mjs        clamp/dist/angles + seeded Mulberry32 RNG (deterministic)
+  config.mjs      maps, pillar layouts, skins, perks, glitches, tunables
+  geometry.mjs    collision, line-of-sight, vision cones, spawning
+  agents.mjs      NPC routines, dumb-human "slips", glitch reactions, humanScore
+  hunter.mjs      AI Hunter targeting + inspection creep
+  sim.mjs         CrowdSim — the shared orchestrator both modes build on
+client/      browser presentation
+  render.mjs      canvas renderer + particles
+  audio.mjs       generated WebAudio sfx (no asset files)
+  input.mjs       keyboard → movement intent
+  hud.mjs         overlay / meter DOM glue
+  solo.mjs        SOLO entry: waves, perks, suspicion, kill-cam
+  mp.mjs          MULTIPLAYER client: snapshot interpolation
+server.mjs   zero-dep Node server: raw WebSocket + rooms, drives a CrowdSim
+test/headless.mjs  runs the sim under Node for both modes (npm run check)
+index.html / mp.html   solo / multiplayer pages
+```
+
+**Solo** — wave roguelite (`/solo`)
+- Endless waves: survive 40s, clear, pick a stacking **perk** (8 of them), repeat.
+- **1 → 4 AI Hunters** scan a LOS cone, lock the most *human-looking* body, creep in to inspect — purely on **behavior**, never identity.
+- **Blend**: match crowd pose/speed, hold Shift for NPC-speed walk, use cover. Sprint or break from the crowd → suspicion spikes.
+- **4 glitch events** (alarm / cash / freeze / crowd-wave), **dumb-human bots** that visibly slip, **kill-cam**, **score + best run** saved locally. Maps rotate per wave.
+
+**Multiplayer** — one Hunter vs hiders (`/`)
+- **Server-authoritative** 20Hz CrowdSim; raw hand-rolled WebSocket, **no npm install**.
+- **Quick Play** matchmaking + **private rooms** with server-minted codes (capacity-capped).
+- One random human is the **Hunter**; the rest blend into the AI crowd + slipping bots. Hunter presses **Space** to tag the body in front — catch a human/bot, or whiff an NPC and get **stunned**.
+- **3 maps** (Plaza / Atrium / Stacks) + crowd skins + **taunt emotes** (1–4), kill-cam, screen flash, **"HUMANS LEFT: N"** stakes, killfeed, juice.
+- **LAN** out of the box; **internet** via one tunnel command.
 
 ---
 
 ## Run it
 
-See **[RUN.md](RUN.md)** for full instructions.
+See **[RUN.md](RUN.md)** for full instructions. ES modules need `http://`, so both
+modes run through the bundled server (no more double-clicking a file).
 
 ```bash
-# Solo: just open index.html
-
-# Multiplayer:
-npm start              # prints localhost + LAN URLs
-# friends on your wifi open the printed http://192.168.x.x:8080
-# for internet friends, in a second terminal:
-npm run tunnel         # public link, no account
+npm start              # starts server, prints localhost + LAN URLs
+# Solo:        http://localhost:8080/solo
+# Multiplayer: http://localhost:8080/
+npm run check          # syntax-check + headless engine tests
+npm run tunnel         # public internet link (second terminal, no account)
 ```
 
 **Controls:** WASD move · Shift slow-walk · F dance · 1–4 taunt · Space tag (Hunter) · Q decoy (solo perk) · P screenshot.
