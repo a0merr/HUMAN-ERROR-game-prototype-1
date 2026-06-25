@@ -28,11 +28,13 @@ let snapPrev = null, snapCur = null, snapTime = 0;   // interpolation buffers
 let glitchOff = 0, feedItems = [];
 
 // ---------- websocket ----------
-function connect(name, room) {
+function connect(action, name, room) {
+  // action: { t:"create"|"join", name, room }
+  if (ws && ws.readyState === 1) { send(action); return; }
   const proto = location.protocol === "https:" ? "wss" : "ws";
   ws = new WebSocket(proto + "://" + location.host);
   $("connStatus").textContent = "Connecting…";
-  ws.onopen = () => { ws.send(JSON.stringify({ t: "join", name, room })); };
+  ws.onopen = () => { $("connStatus").textContent = ""; ws.send(JSON.stringify(action)); };
   ws.onclose = () => { $("connStatus").textContent = "Disconnected. Is the server running? (node server.js)"; };
   ws.onerror = () => { $("connStatus").textContent = "Connection failed. Run: node server.js, then open http://localhost:8080"; };
   ws.onmessage = (e) => handle(JSON.parse(e.data));
@@ -40,7 +42,8 @@ function connect(name, room) {
 function send(obj) { if (ws && ws.readyState === 1) ws.send(JSON.stringify(obj)); }
 
 function handle(m) {
-  if (m.t === "joined") { myId = m.id; myName = m.you; }
+  if (m.t === "error") { $("connStatus").textContent = m.msg; }
+  else if (m.t === "joined") { myId = m.id; myName = m.you; }
   else if (m.t === "lobby") {
     $("lobbyCode").textContent = m.code;
     const list = $("playerList");
@@ -188,10 +191,14 @@ function frame(ts) {
 requestAnimationFrame(frame);
 
 // ---------- ui buttons ----------
+function curName() { return $("nameInput").value.trim() || "Player"; }
+$("createBtn").addEventListener("click", () => {
+  connect({ t: "create", name: curName() });
+});
 $("joinBtn").addEventListener("click", () => {
-  const name = $("nameInput").value.trim() || "Player";
-  const room = ($("roomInput").value.trim() || "PARTY").toUpperCase();
-  connect(name, room);
+  const room = $("roomInput").value.trim().toUpperCase().replace(/[^A-Z0-9]/g, "");
+  if (!room) { $("connStatus").textContent = "Enter a room code, or Create Room."; return; }
+  connect({ t: "join", name: curName(), room });
 });
 $("roomInput").addEventListener("keydown", e => { if (e.key === "Enter") $("joinBtn").click(); });
 $("startBtn").addEventListener("click", () => send({ t: "start" }));

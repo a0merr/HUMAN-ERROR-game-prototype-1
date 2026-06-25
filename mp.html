@@ -67,11 +67,12 @@
     <h1>HUMAN <span>ERROR</span></h1>
     <h2>Hide in the crowd. One of you is the Hunter.</h2>
     <input id="nameInput" placeholder="Your name" maxlength="14" />
+    <button id="createBtn">CREATE ROOM</button>
     <div class="row">
-      <input id="roomInput" placeholder="Room code (e.g. PARTY)" maxlength="8" />
-      <button id="joinBtn">JOIN</button>
+      <input id="roomInput" placeholder="Room code" maxlength="8" style="text-transform:uppercase" />
+      <button id="joinBtn" class="ghost">JOIN</button>
     </div>
-    <p class="hint">Share the room code with friends — same code = same match. Testing alone? Just join; you'll be the Hunter chasing the bots.</p>
+    <p class="hint">Create a room to get a unique code, then share it with friends — only people with that exact code join your match. Testing alone? Create one; you'll be the Hunter chasing the bots.</p>
     <p id="connStatus" class="hint"></p>
   </div>
 

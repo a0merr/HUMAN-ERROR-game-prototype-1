@@ -199,16 +199,28 @@ function reaction(a, dt, room) {
 
 // ---------- rooms ----------
 const rooms = new Map();   // code -> room
-function getRoom(code) {
-  let r = rooms.get(code);
-  if (!r) {
-    r = {
-      code, state: "lobby", players: new Map(), // sock -> player
-      npcs: [], bots: [], glitch: null, glitchCD: 6, timer: MATCH_SECS,
-      hunters() { return [...this.players.values()].filter(p => p.role === "hunter" && p.alive); },
-    };
-    rooms.set(code, r);
+const CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"; // no O/0/I/1 ambiguity
+const CODE_LEN = 4;        // 32^4 = 1,048,576 codes; empty rooms recycle theirs
+const MAX_PLAYERS = 12;    // cap so strangers can't pile into a private room
+
+function genCode() {
+  for (let attempt = 0; attempt < 50; attempt++) {
+    let c = "";
+    for (let i = 0; i < CODE_LEN; i++) c += CODE_ALPHABET[(Math.random() * CODE_ALPHABET.length) | 0];
+    if (!rooms.has(c)) return c;
   }
+  // astronomically unlikely fallback: extend length until free
+  let c; do { c = ""; for (let i = 0; i < CODE_LEN + 2; i++) c += CODE_ALPHABET[(Math.random() * CODE_ALPHABET.length) | 0]; } while (rooms.has(c));
+  return c;
+}
+function createRoom() {
+  const code = genCode();
+  const r = {
+    code, state: "lobby", players: new Map(), // sock -> player
+    npcs: [], bots: [], glitch: null, glitchCD: 6, timer: MATCH_SECS,
+    hunters() { return [...this.players.values()].filter(p => p.role === "hunter" && p.alive); },
+  };
+  rooms.set(code, r);
   return r;
 }
 function broadcast(room, obj) { const s = JSON.stringify(obj); for (const sock of room.players.keys()) wsSend(sock, s); }
@@ -307,17 +319,26 @@ function snap(a, kind, id) {
 
 // ---------- connection handlers ----------
 function onConnect(sock) { sock._player = null; }
+function joinRoom(sock, room, name) {
+  const player = { id: nextId++, name: (name || "Player").slice(0, 14), room, role: "spectator",
+    x: 0, y: 0, facing: 0, pose: 0, phase: 0, dancePhase: 0, alive: true, score: 0, stunT: 0,
+    input: { up: 0, down: 0, left: 0, right: 0, shift: 0, dance: 0 }, tagEdge: false, sock };
+  sock._player = player; room.players.set(sock, player);
+  wsSend(sock, JSON.stringify({ t: "joined", id: player.id, room: room.code, you: player.name }));
+  sendLobby(room);
+}
 function onMessage(sock, msg) {
-  if (msg.t === "join") {
-    const code = (msg.room || "PUBLIC").toUpperCase().slice(0, 8);
-    const room = getRoom(code);
-    const player = { id: nextId++, name: (msg.name || "Player").slice(0, 14), room, role: "spectator",
-      x: 0, y: 0, facing: 0, pose: 0, phase: 0, dancePhase: 0, alive: true, score: 0, stunT: 0,
-      input: { up: 0, down: 0, left: 0, right: 0, shift: 0, dance: 0 }, tagEdge: false, sock };
-    sock._player = player; room.players.set(sock, player);
-    wsSend(sock, JSON.stringify({ t: "joined", id: player.id, room: code, you: player.name }));
-    sendLobby(room);
-    if (room.state === "playing") { player.role = "spectator"; } // join mid-match as spectator
+  if (msg.t === "create") {
+    if (sock._player) return;
+    const room = createRoom();
+    joinRoom(sock, room, msg.name);
+  } else if (msg.t === "join") {
+    if (sock._player) return;
+    const code = String(msg.room || "").toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 8);
+    const room = rooms.get(code);
+    if (!room) { wsSend(sock, JSON.stringify({ t: "error", msg: "No room '" + (code || "—") + "'. Check the code." })); return; }
+    if (room.players.size >= MAX_PLAYERS) { wsSend(sock, JSON.stringify({ t: "error", msg: "Room " + code + " is full." })); return; }
+    joinRoom(sock, room, msg.name);
   } else if (!sock._player) return;
   else if (msg.t === "start") { const room = sock._player.room; if (room.state !== "playing") startMatch(room); }
   else if (msg.t === "input") { const p = sock._player; p.input = msg.k || p.input; if (msg.tag) p.tagEdge = true; }
