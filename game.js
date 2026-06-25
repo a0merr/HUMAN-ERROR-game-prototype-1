@@ -103,6 +103,7 @@ function losBlocked(x0, y0, x1, y1) {
 function makeAgent(isPlayer) {
   return {
     isPlayer,
+    botHider: false,
     x: rand(ARENA.x + 30, ARENA.x + ARENA.w - 30),
     y: rand(ARENA.y + 30, ARENA.y + ARENA.h - 30),
     vx: 0, vy: 0,
@@ -114,6 +115,8 @@ function makeAgent(isPlayer) {
     animPhase: rand(0, Math.PI*2),
     facing: rand(0, Math.PI*2),
     reacting: false, reactT: 0, reacted: false,
+    // dumb-human-bot slip state
+    slipT: rand(2.5, 6), slipping: false, slip: "", slipDur: 0, sdx: 0, sdy: 0,
   };
 }
 
@@ -179,6 +182,54 @@ function updateNPC(a, dt) {
   a.pose = a.state;
 }
 
+// dumb-human bots: AI hiders that mostly blend but periodically SLIP like a real
+// human would — so the joke reads even when the player is doing everything right.
+const SLIPS = ["sprint", "flinch", "overdance", "bunch"];
+function startSlip(a) {
+  a.slipping = true;
+  a.slip = SLIPS[(Math.random()*SLIPS.length)|0];
+  a.slipDur = rand(0.5, 1.1);
+  const ang = rand(0, Math.PI*2);
+  a.sdx = Math.cos(ang); a.sdy = Math.sin(ang);
+}
+function doSlip(a, dt) {
+  if (a.slip === "sprint") {                 // panic dash
+    a.pose = POSE.WALK;
+    a.x = clamp(a.x + a.sdx*PLAYER_SPEED*dt, ARENA.x+BODY_R, ARENA.x+ARENA.w-BODY_R);
+    a.y = clamp(a.y + a.sdy*PLAYER_SPEED*dt, ARENA.y+BODY_R, ARENA.y+ARENA.h-BODY_R);
+    a.facing = Math.atan2(a.sdy, a.sdx);
+  } else if (a.slip === "flinch") {          // bolt away from the Hunter
+    const dx = a.x - hunter.x, dy = a.y - hunter.y, d = Math.hypot(dx,dy)||1;
+    a.pose = POSE.WALK;
+    a.x = clamp(a.x + dx/d*150*dt, ARENA.x+BODY_R, ARENA.x+ARENA.w-BODY_R);
+    a.y = clamp(a.y + dy/d*150*dt, ARENA.y+BODY_R, ARENA.y+ARENA.h-BODY_R);
+    a.facing = Math.atan2(dy, dx);
+  } else if (a.slip === "overdance") {        // too-perfect, too-fast dance
+    a.pose = POSE.DANCE; a.dancePhase += dt*18;
+    a.vx = a.vy = 0;
+  } else if (a.slip === "bunch") {            // crowd the nearest body
+    a.pose = POSE.WALK;
+    a.x = clamp(a.x + a.sdx*70*dt, ARENA.x+BODY_R, ARENA.x+ARENA.w-BODY_R);
+    a.y = clamp(a.y + a.sdy*70*dt, ARENA.y+BODY_R, ARENA.y+ARENA.h-BODY_R);
+  }
+}
+function updateBot(a, dt) {
+  if (a.reacting) { updateNPC(a, dt); return; }   // glitch reaction handled by NPC path
+  if (!a.slipping) {
+    a.slipT -= dt;
+    if (a.slipT <= 0) startSlip(a);
+  }
+  if (a.slipping) {
+    a.slipDur -= dt;
+    a.animPhase += dt;
+    doSlip(a, dt);
+    collidePillars(a);
+    if (a.slipDur <= 0) { a.slipping = false; a.slipT = rand(2.8, 6.5); }
+    return;
+  }
+  updateNPC(a, dt);   // blends normally most of the time
+}
+
 // glitch reaction motions
 function runReaction(a, dt) {
   if (!currentGlitch) return;
@@ -210,28 +261,35 @@ let agents = [], player = null;
 let timeLeft = 90, suspicion = 0, running = false;
 let shake = 0, particles = [];
 let glitchCooldown = 6, lastTimerInt = 90;
-let stats = { closest: 0, glitchHit: 0, glitchTotal: 0 };
+let stats = { closest: 0, glitchHit: 0, glitchTotal: 0, botsOut: 0 };
+let killcam = null;      // {x, y, t, dur, won}
 
-const NPC_COUNT = 36;
+const NPC_COUNT = 33;
+const N_BOTS = 3;        // dumb-human AI hiders that slip
 
+function placeFree(a) {
+  let tries = 0;
+  while (insidePillar(a.x, a.y) && tries++ < 20) {
+    a.x = rand(ARENA.x+30, ARENA.x+ARENA.w-30);
+    a.y = rand(ARENA.y+30, ARENA.y+ARENA.h-30);
+  }
+}
 function spawn() {
   agents = [];
-  for (let i = 0; i < NPC_COUNT; i++) {
-    let a = makeAgent(false);
-    let tries = 0;
-    while (insidePillar(a.x, a.y) && tries++ < 20) { a.x = rand(ARENA.x+30, ARENA.x+ARENA.w-30); a.y = rand(ARENA.y+30, ARENA.y+ARENA.h-30); }
-    agents.push(a);
-  }
+  for (let i = 0; i < NPC_COUNT; i++) { const a = makeAgent(false); placeFree(a); agents.push(a); }
+  for (let i = 0; i < N_BOTS; i++) { const a = makeAgent(false); a.botHider = true; placeFree(a); agents.push(a); }
   player = makeAgent(true);
   player.x = ARENA.x + ARENA.w/2; player.y = ARENA.y + ARENA.h - 55;
   agents.push(player);
 
   hunter.x = W/2; hunter.y = ARENA.y + 28; hunter.facing = Math.PI/2;
   hunter.target = null; hunter.retargetT = 0; hunter.lock = 0;
+  hunter.stuckT = 0; hunter.lastx = hunter.x; hunter.lasty = hunter.y;
 
   timeLeft = 90; suspicion = 0; running = true; shake = 0;
   particles = []; currentGlitch = null; glitchCooldown = 6; lastTimerInt = 90;
-  stats = { closest: 0, glitchHit: 0, glitchTotal: 0 };
+  stats = { closest: 0, glitchHit: 0, glitchTotal: 0, botsOut: 0 };
+  killcam = null;
   elGlitch.style.opacity = "0";
 }
 function insidePillar(x, y) {
@@ -376,10 +434,24 @@ function updateHunter(dt) {
     hunter.stuckT = 0;
   }
 
-  // catch: locked on real player & close
+  // catch the real player: needs lock + proximity (fair warning via lock ring)
   if (hunter.target === player && hunter.lock > 0.55 && dist(hunter.x,hunter.y,player.x,player.y) < hunter.catchR) {
     endGame(false, "caught");
+    return;
   }
+  // catch a dumb-human bot: instant pop, NOT game over — takes heat off the player
+  if (hunter.target && hunter.target.botHider && dist(hunter.x,hunter.y,hunter.target.x,hunter.target.y) < hunter.catchR) {
+    eliminateBot(hunter.target);
+  }
+}
+
+function eliminateBot(bot) {
+  const i = agents.indexOf(bot);
+  if (i >= 0) agents.splice(i, 1);
+  burst(bot.x, bot.y, "#ff2e63", 22);
+  stats.botsOut++;
+  hunter.target = null; hunter.lock = 0; shake = Math.max(shake, 8);
+  beep(160, 0.1, "square", 0.06); setTimeout(()=>beep(110,0.18,"sawtooth",0.05), 90);
 }
 
 // ---------- glitch events ----------
@@ -395,6 +467,8 @@ function triggerGlitch() {
   stats.glitchTotal++;
   for (const a of agents) {
     if (a.isPlayer) { a.reacted = false; a.reacting = false; continue; }
+    // dumb-human bots flub the reaction ~45% of the time → they get spotted
+    if (a.botHider && Math.random() < 0.45) { a.reacting = false; a.reacted = false; continue; }
     a.reacting = true; a.reactT = g.t;
   }
   player.reacted = false; player.reacting = false;
@@ -414,17 +488,35 @@ function burst(x, y, color, n = 18) {
 }
 
 // ---------- end ----------
+let pendingEnd = null;   // {won, reason, survived}
 function endGame(won, reason) {
   if (!running) return;
   running = false;
   hunter.lock = 0;
   elVignette.style.opacity = "0";
-  endScreen.classList.remove("hidden", "win", "lose");
   const survived = Math.max(0, Math.ceil(90 - timeLeft));
+  pendingEnd = { won, reason, survived };
+
+  if (won) {
+    showEndScreen();   // no kill-cam on a win
+  } else {
+    // KILL-CAM: freeze, zoom on the busted body, slow-mo, then reveal the verdict
+    killcam = { x: player.x, y: player.y, t: 0, dur: 2.4, won: false };
+    burst(player.x, player.y, "#ff2e63", 40);
+    shake = 18;
+    beep(220,0.12,"sawtooth"); setTimeout(()=>beep(140,0.25,"sawtooth"),120);
+  }
+}
+function showEndScreen() {
+  if (!pendingEnd) return;
+  const { won, reason, survived } = pendingEnd;
+  killcam = null;
+  endScreen.classList.remove("hidden", "win", "lose");
   elStats.innerHTML =
     `<span><b>${Math.min(90, Math.round(90 - timeLeft))}s</b>survived</span>` +
     `<span><b>${Math.round(stats.closest)}%</b>closest call</span>` +
-    `<span><b>${stats.glitchHit}/${stats.glitchTotal}</b>glitches nailed</span>`;
+    `<span><b>${stats.glitchHit}/${stats.glitchTotal}</b>glitches nailed</span>` +
+    `<span><b>${stats.botsOut}</b>bots busted</span>`;
   if (won) {
     endScreen.classList.add("win");
     endTitle.textContent = "SURVIVED";
@@ -437,10 +529,8 @@ function endGame(won, reason) {
     endSub.textContent = reason === "suspicion"
       ? "Suspicion maxed — too human." : "Hunter locked you at " + survived + "s.";
     endFlavor.textContent = "You flinched, sprinted, or fumbled a glitch. Every caught human is a punchline.";
-    burst(player.x, player.y, "#ff2e63", 34);
-    shake = 16;
-    beep(220,0.12,"sawtooth"); setTimeout(()=>beep(140,0.25,"sawtooth"),120);
   }
+  pendingEnd = null;
 }
 
 // ---------- drawing ----------
@@ -512,6 +602,16 @@ function draw() {
   ctx.save();
   if (shake > 0.2) ctx.translate(rand(-shake,shake), rand(-shake,shake));
 
+  // KILL-CAM zoom: ease into a close-up centered on the busted body
+  if (killcam) {
+    const e = clamp(killcam.t / 0.5, 0, 1);
+    const ez = 1 - Math.pow(1 - e, 3);     // easeOutCubic
+    const zoom = 1 + 1.6 * ez;
+    ctx.translate(W/2, H/2);
+    ctx.scale(zoom, zoom);
+    ctx.translate(-killcam.x, -killcam.y);
+  }
+
   // floor
   ctx.fillStyle = "#0e1422";
   ctx.fillRect(ARENA.x, ARENA.y, ARENA.w, ARENA.h);
@@ -582,7 +682,29 @@ function draw() {
   for (const p of particles) { ctx.globalAlpha = clamp(p.life,0,1); ctx.fillStyle = p.color; ctx.fillRect(p.x, p.y, 3, 3); }
   ctx.globalAlpha = 1;
 
+  // kill-cam highlight ring on the busted body (world space, inside zoom)
+  if (killcam) {
+    const pulse = 2 + Math.sin(killcam.t*12)*1.2;
+    ctx.beginPath(); ctx.strokeStyle = "rgba(255,46,99,.95)"; ctx.lineWidth = pulse;
+    ctx.arc(killcam.x, killcam.y, BODY_R+6, 0, Math.PI*2); ctx.stroke();
+  }
+
   ctx.restore();
+
+  // kill-cam stamp (screen space, on top of everything)
+  if (killcam && killcam.t > 0.45) {
+    const a = clamp((killcam.t-0.45)/0.3, 0, 1);
+    ctx.save();
+    ctx.globalAlpha = a;
+    ctx.textAlign = "center";
+    ctx.fillStyle = "#ff2e63";
+    ctx.font = "900 64px Segoe UI";
+    ctx.fillText("HUMAN ERROR", W/2, H/2 - 8);
+    ctx.fillStyle = "#e8edf5";
+    ctx.font = "700 20px Segoe UI";
+    ctx.fillText("CAUGHT — too human.", W/2, H/2 + 30);
+    ctx.restore();
+  }
 }
 
 // ---------- loop ----------
@@ -614,7 +736,10 @@ function tick(ts) {
     }
 
     updatePlayer(dt);
-    for (const a of agents) if (!a.isPlayer) updateNPC(a, dt);
+    for (const a of agents) {
+      if (a.isPlayer) continue;
+      if (a.botHider) updateBot(a, dt); else updateNPC(a, dt);
+    }
     if (player.reacting) { player.reactT -= dt; runReaction(player, dt); collidePillars(player); if (player.reactT <= 0) player.reacting = false; }
     updateHunter(dt);
     updateSuspicion(dt);
@@ -628,6 +753,12 @@ function tick(ts) {
       heartT -= dt;
       if (heartT <= 0) { heartT = clamp(0.7 - heat*0.4, 0.18, 0.7); beep(60, 0.12, "sine", 0.05*heat); }
     }
+  }
+
+  // kill-cam runs in slow-mo after a catch, then reveals the verdict screen
+  if (killcam) {
+    killcam.t += dt * 0.45;
+    if (killcam.t >= killcam.dur) showEndScreen();
   }
 
   for (const p of particles) { p.x += p.vx*dt; p.y += p.vy*dt; p.vx*=0.92; p.vy*=0.92; p.life -= dt; }
