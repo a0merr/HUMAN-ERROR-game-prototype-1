@@ -5,6 +5,8 @@
 // ============================================================
 
 import { ARENA, BODY_R, mapById, SKINS, PALETTE } from '../engine/config.mjs';
+import { clamp, lerpAngle } from '../engine/math.mjs';
+import { collidePillars, clampArena } from '../engine/geometry.mjs';
 import { initAudio, beep } from './audio.mjs';
 
 const cv = document.getElementById('game');
@@ -12,6 +14,8 @@ const ctx = cv.getContext('2d');
 const W = cv.width, H = cv.height;
 
 const POSE = { IDLE: 0, WALK: 1, DANCE: 2 };
+// must match server.mjs movement tunables for prediction to track
+const HIDER_SPEED = 140, HUNTER_SPEED = 132, NPC_SPEED = 58;
 const EMOJI = ['👋', '🕺', '😎', '🔥'];
 
 // per-map floor tint (cosmetic only; geometry comes from engine maps)
@@ -34,6 +38,9 @@ let snapPrev = null, snapCur = null, snapTime = 0;
 let glitchOff = 0, feedItems = [];
 let hidersLeft = -1, myStun = 0, prevStun = 0;
 let killcam = null, flash = 0, shake = 0, particles = [];
+// client-side prediction of the local body (instant input response; the server
+// remains authoritative — predicted pos is gently corrected toward each snapshot)
+let pred = null, predPose = POSE.IDLE, predTs = 0;
 
 // ---------- audio ----------
 function sfx(name) {
@@ -75,7 +82,7 @@ function handle(m) {
     crowdSkin = m.skin || 0; curMapId = m.mapId || 'plaza';
     lobbyScreen.classList.add('hidden'); resultScreen.classList.add('hidden');
     feedItems = []; renderFeed(); snapPrev = snapCur = null; killcam = null; flash = 0; shake = 0; particles = [];
-    myStun = prevStun = 0; hidersLeft = -1;
+    myStun = prevStun = 0; hidersLeft = -1; pred = null; predTs = 0;
     feed('Map: ' + mapById(curMapId).name + ' · Skin: ' + (SKINS[crowdSkin] ? SKINS[crowdSkin].id : '—')); sfx('start');
   } else if (m.t === 'snap') {
     snapPrev = snapCur; snapCur = m; snapTime = performance.now();
@@ -170,6 +177,41 @@ function drawPerson(b, t) {
   ctx.restore();
 }
 
+// Advance the predicted local body from current input, then nudge it toward the
+// latest authoritative position. Returns {x,y,facing,pose} or null.
+function predict() {
+  const now = performance.now();
+  const dt = predTs ? clamp((now - predTs) / 1000, 0, 0.05) : 0;
+  predTs = now;
+  if (!snapCur || myRole === 'spectator') { pred = null; return null; }
+  const sb = snapCur.bodies.find(b => b.id === myId);
+  if (!sb) { pred = null; return null; }
+  if (!pred) pred = { x: sb.x, y: sb.y, facing: sb.f };
+
+  const isHunter = myRole === 'hunter';
+  let ix = (keys['d'] || keys['arrowright'] ? 1 : 0) - (keys['a'] || keys['arrowleft'] ? 1 : 0);
+  let iy = (keys['s'] || keys['arrowdown'] ? 1 : 0) - (keys['w'] || keys['arrowup'] ? 1 : 0);
+  if (isHunter && myStun) { ix = iy = 0; }
+  const speed = isHunter ? HUNTER_SPEED : (keys['shift'] ? NPC_SPEED : HIDER_SPEED);
+
+  if (ix || iy) {
+    const d = Math.hypot(ix, iy);
+    pred.x += ix / d * speed * dt; pred.y += iy / d * speed * dt;
+    pred.facing = lerpAngle(pred.facing, Math.atan2(iy, ix), 0.35);
+    predPose = POSE.WALK;
+  } else {
+    predPose = (!isHunter && keys['f']) ? POSE.DANCE : POSE.IDLE;
+  }
+  collidePillars(pred, mapById(curMapId).pillars);
+  clampArena(pred);
+
+  // reconcile drift toward the server (strong on localhost, smooths jitter on the wire)
+  const corr = clamp(6 * dt, 0, 1);
+  pred.x += (sb.x - pred.x) * corr;
+  pred.y += (sb.y - pred.y) * corr;
+  return { x: pred.x, y: pred.y, facing: pred.facing, pose: predPose };
+}
+
 const lerp = (a, b, t) => a + (b - a) * t;
 function interpBodies() {
   if (!snapCur) return [];
@@ -203,8 +245,11 @@ function frame(ts) {
   ctx.strokeStyle = '#243149'; ctx.lineWidth = 2; ctx.strokeRect(ARENA.x, ARENA.y, ARENA.w, ARENA.h);
 
   const bodies = interpBodies();
-  bodies.sort((p, q) => p.y - q.y);
   const me = bodies.find(b => b.id === myId);
+  // override the local body with the predicted pose for instant input response
+  const pm = predict();
+  if (me && pm) { me.x = pm.x; me.y = pm.y; me.f = pm.facing; me.p = pm.pose; me._moving = pm.pose === POSE.WALK; }
+  bodies.sort((p, q) => p.y - q.y);
   for (const b of bodies) if (b.id !== myId) drawPerson(b, t);
   if (me) {
     drawPerson(me, t);
