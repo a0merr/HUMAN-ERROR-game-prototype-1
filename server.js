@@ -264,8 +264,10 @@ function doTag(room, hunter) {
   if (isNPC) { hunter.stunT = MISS_STUN; broadcast(room, { t: "event", msg: hunter.name + " tagged an NPC — stunned!" }); return; }
   // caught a catchable body
   target.alive = false; hunter.score = (hunter.score || 0) + 1;
-  if (target.kind === "bot") broadcast(room, { t: "event", msg: hunter.name + " caught a dumb-human bot!" });
-  else broadcast(room, { t: "event", msg: hunter.name + " CAUGHT " + target.name + "!" });
+  const who = target.kind === "bot" ? "a dumb-human bot" : target.name;
+  broadcast(room, { t: "event", msg: hunter.name + (target.kind === "bot" ? " caught " : " CAUGHT ") + who + "!" });
+  // structured catch for client kill-cam / flash
+  broadcast(room, { t: "caught", id: target.id, x: Math.round(target.x), y: Math.round(target.y), name: who });
   // win if all human hiders gone
   if (humanHiders(room).length === 0 && [...room.players.values()].some(p => p.role === "hider")) endMatch(room, "hunter");
 }
@@ -308,8 +310,9 @@ function tick(room, dt) {
   for (const p of room.players.values()) if (p.role !== "spectator" && p.alive) bodies.push(snap(p, p.role === "hunter" ? "hunter" : "hider", p.id));
   for (const b of room.bots) if (b.alive) bodies.push(snap(b, "npc", b.id));
   for (const n of room.npcs) bodies.push(snap(n, "npc", n.id));
+  const anyHumanHiders = [...room.players.values()].some(p => p.role === "hider");
   broadcast(room, { t: "snap", timer: Math.ceil(room.timer), glitch: room.glitch ? room.glitch.name : null,
-    bodies, hunterStun: anyHunterStun(room) });
+    bodies, hunterStun: anyHunterStun(room), hidersLeft: anyHumanHiders ? humanHiders(room).length : -1 });
 }
 function anyHunterStun(room) { const h = [...room.players.values()].find(p => p.role === "hunter"); return h ? (h.stunT > 0 ? 1 : 0) : 0; }
 function snap(a, kind, id) {
@@ -331,6 +334,13 @@ function onMessage(sock, msg) {
   if (msg.t === "create") {
     if (sock._player) return;
     const room = createRoom();
+    joinRoom(sock, room, msg.name);
+  } else if (msg.t === "quick") {
+    if (sock._player) return;
+    // find an open public room still in lobby with space, else make one
+    let room = null;
+    for (const r of rooms.values()) if (r.public && r.state === "lobby" && r.players.size < MAX_PLAYERS) { room = r; break; }
+    if (!room) { room = createRoom(); room.public = true; }
     joinRoom(sock, room, msg.name);
   } else if (msg.t === "join") {
     if (sock._player) return;

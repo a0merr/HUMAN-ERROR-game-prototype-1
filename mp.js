@@ -26,6 +26,8 @@ const elRole = $("role"), elTimer = $("timer"), elTimerLabel = $("timerLabel"), 
 let ws = null, myId = null, myName = "", myRole = "spectator";
 let snapPrev = null, snapCur = null, snapTime = 0;   // interpolation buffers
 let glitchOff = 0, feedItems = [];
+let hidersLeft = -1, myStun = 0;
+let killcam = null, flash = 0;
 
 // ---------- websocket ----------
 function connect(action, name, room) {
@@ -50,16 +52,23 @@ function handle(m) {
     list.innerHTML = m.players.map(p => `<div class="pl"><span>${esc(p.name)}</span><span class="hint">${p.name===myName?"you":""}</span></div>`).join("");
     if (m.state !== "playing") { joinScreen.classList.add("hidden"); lobbyScreen.classList.remove("hidden"); }
   }
-  else if (m.t === "start") { lobbyScreen.classList.add("hidden"); resultScreen.classList.add("hidden"); feedItems = []; renderFeed(); snapPrev = snapCur = null; }
+  else if (m.t === "start") { lobbyScreen.classList.add("hidden"); resultScreen.classList.add("hidden"); feedItems = []; renderFeed(); snapPrev = snapCur = null; killcam = null; flash = 0; myStun = 0; hidersLeft = -1; }
   else if (m.t === "snap") {
     snapPrev = snapCur; snapCur = m; snapTime = performance.now();
     elTimer.textContent = m.timer;
+    hidersLeft = (m.hidersLeft === undefined) ? -1 : m.hidersLeft;
     const me = m.bodies.find(b => b.id === myId);
     setRole(me ? (me.k === "hunter" ? "hunter" : "hider") : "spectator");
-    elTimerLabel.textContent = myRole === "hunter" ? "TAG THE HUMANS" : "SURVIVE";
+    if (myRole === "hunter") { myStun = m.hunterStun ? 1 : 0; elTimerLabel.textContent = hidersLeft > 0 ? "HUMANS LEFT: " + hidersLeft : "TAG THE BOTS"; }
+    else if (myRole === "hider") elTimerLabel.textContent = "SURVIVE" + (hidersLeft > 0 ? " · " + hidersLeft + " LEFT" : "");
+    else elTimerLabel.textContent = "SPECTATING" + (hidersLeft > 0 ? " · " + hidersLeft + " LEFT" : "");
   }
   else if (m.t === "glitch") { elGlitch.textContent = m.name; elGlitch.style.opacity = "1"; glitchOff = 2.2; }
   else if (m.t === "event") { feed(m.msg); }
+  else if (m.t === "caught") {
+    flash = 0.6;
+    if (m.id === myId) { killcam = { x: m.x, y: m.y, t: 0, dur: 2.0 }; }   // it was you → kill-cam
+  }
   else if (m.t === "over") {
     resultScreen.classList.remove("hidden");
     const win = m.winner === "hunter" ? "HUNTER WINS" : "HIDERS SURVIVE";
@@ -153,6 +162,12 @@ function frame(ts) {
   const t = ts / 1000; t0 = t;
   ctx.clearRect(0,0,W,H);
 
+  ctx.save();
+  if (killcam) {
+    const e = Math.min(1, killcam.t/0.5), ez = 1-Math.pow(1-e,3), zoom = 1+1.6*ez;
+    ctx.translate(W/2,H/2); ctx.scale(zoom,zoom); ctx.translate(-killcam.x,-killcam.y);
+  }
+
   // floor + grid
   ctx.fillStyle = "#0e1422"; ctx.fillRect(ARENA.x,ARENA.y,ARENA.w,ARENA.h);
   ctx.strokeStyle = "#172033"; ctx.lineWidth = 1;
@@ -173,12 +188,43 @@ function frame(ts) {
     ctx.beginPath(); ctx.strokeStyle = col; ctx.lineWidth = 2; ctx.arc(me.x, me.y, BODY_R+7, 0, Math.PI*2); ctx.stroke();
     ctx.fillStyle = col; ctx.font = "bold 10px Segoe UI"; ctx.textAlign = "center";
     ctx.fillText(myRole === "hunter" ? "HUNTER (YOU)" : "YOU", me.x, me.y - BODY_R - 16);
-    // hunter tag reticle
+    // hunter tag reticle (red + dimmer when stunned)
     if (myRole === "hunter") {
       const rng = 34;
-      ctx.strokeStyle = "rgba(255,46,99,.35)"; ctx.lineWidth = 2;
+      ctx.strokeStyle = myStun ? "rgba(120,130,150,.5)" : "rgba(255,46,99,.55)"; ctx.lineWidth = 2;
       ctx.beginPath(); ctx.moveTo(me.x, me.y); ctx.arc(me.x, me.y, rng, me.f - 0.55, me.f + 0.55); ctx.closePath(); ctx.stroke();
     }
+  }
+
+  // kill-cam highlight ring on the busted body (world space)
+  if (killcam) {
+    const pulse = 2 + Math.sin(killcam.t*12)*1.2;
+    ctx.strokeStyle = "rgba(255,46,99,.95)"; ctx.lineWidth = pulse;
+    ctx.beginPath(); ctx.arc(killcam.x, killcam.y, BODY_R+6, 0, Math.PI*2); ctx.stroke();
+  }
+
+  ctx.restore(); // end world transform
+
+  // screen flash on any catch
+  if (flash > 0) { ctx.fillStyle = "rgba(255,46,99," + (flash*0.4).toFixed(3) + ")"; ctx.fillRect(0,0,W,H); flash -= 1/60; }
+
+  // kill-cam stamp + advance
+  if (killcam) {
+    killcam.t += (1/60) * 0.5;
+    if (killcam.t > 0.45) {
+      const a = Math.min(1, (killcam.t-0.45)/0.3);
+      ctx.save(); ctx.globalAlpha = a; ctx.textAlign = "center";
+      ctx.fillStyle = "#ff2e63"; ctx.font = "900 60px Segoe UI"; ctx.fillText("HUMAN ERROR", W/2, H/2-8);
+      ctx.fillStyle = "#e8edf5"; ctx.font = "700 20px Segoe UI"; ctx.fillText("YOU'RE OUT — too human.", W/2, H/2+30);
+      ctx.restore();
+    }
+    if (killcam.t >= killcam.dur) killcam = null;
+  }
+
+  // stunned banner for hunter
+  if (myRole === "hunter" && myStun) {
+    ctx.save(); ctx.textAlign = "center"; ctx.fillStyle = "rgba(255,46,99,.85)"; ctx.font = "800 18px Segoe UI";
+    ctx.fillText("STUNNED — wrong target", W/2, H - 90); ctx.restore();
   }
 
   // glitch banner fade
@@ -192,6 +238,9 @@ requestAnimationFrame(frame);
 
 // ---------- ui buttons ----------
 function curName() { return $("nameInput").value.trim() || "Player"; }
+$("quickBtn").addEventListener("click", () => {
+  connect({ t: "quick", name: curName() });
+});
 $("createBtn").addEventListener("click", () => {
   connect({ t: "create", name: curName() });
 });
