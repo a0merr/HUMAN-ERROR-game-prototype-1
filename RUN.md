@@ -85,5 +85,5 @@ This runs `localtunnel` (via `npx`, no install/account) and prints a public `htt
 ## Notes / current limits (prototype)
 
 - Single Node process, in-memory rooms (plenty for testing; scale later with multiple instances + shared store).
-- No reconnect yet — refresh rejoins as a new player.
+- Reconnect: refreshing within ~20s rejoins your same body and role mid-match (persistent per-browser token). After that the slot is freed.
 - localhost/LAN/tunnel only; no hosted deployment yet.
