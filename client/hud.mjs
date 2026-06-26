@@ -26,8 +26,17 @@ export class Hud {
     this.endSub = $('endSub');
     this.endFlavor = $('endFlavor');
     this.endStats = $('endStats');
+    this.combo = $('combo');
+    this.metaLine = $('metaLine');
     this.feedItems = [];
   }
+
+  setCombo(n) {
+    if (!this.combo) return;
+    if (n >= 2) { this.combo.textContent = 'COMBO ×' + n; this.combo.style.opacity = '1'; }
+    else this.combo.style.opacity = '0';
+  }
+  setMeta(html) { if (this.metaLine) this.metaLine.innerHTML = html || ''; }
 
   setTimer(n) { if (this.timer) this.timer.textContent = n; }
   setTimerLabel(s) { if (this.timerLabel) this.timerLabel.textContent = s; }

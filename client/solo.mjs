@@ -8,17 +8,20 @@ import { ARENA, WAVE, MAPS, ALL_PERKS, PALETTE } from '../engine/config.mjs';
 import { clamp } from '../engine/math.mjs';
 import { CrowdSim } from '../engine/sim.mjs';
 import { makeHunter, updateHunter, seesAgent, maxPlayerLock } from '../engine/hunter.mjs';
-import { humanScore } from '../engine/agents.mjs';
+import { humanScore, neighborStats } from '../engine/agents.mjs';
+import { collidePillars } from '../engine/geometry.mjs';
 import { Renderer, Particles } from './render.mjs';
 import { Input } from './input.mjs';
 import { Hud } from './hud.mjs';
 import { initAudio, beep, sfx } from './audio.mjs';
+import { ClipRecorder } from './clip.mjs';
 
 const cv = document.getElementById('game');
 const renderer = new Renderer(cv);
 const particles = new Particles();
 const hud = new Hud();
 const input = new Input().attach();
+const clip = new ClipRecorder(cv, { gameName: 'human-error' });
 
 let sim = null, player = null;
 let wave = 1, waveTime = 0, running = false, betweenWaves = false;
@@ -28,6 +31,27 @@ let killcam = null, pendingEnd = null;
 let perks = new Set();
 let stats = { botsOut: 0, glitchHit: 0, glitchTotal: 0 };
 let best = parseInt(localStorage.getItem('humanError.best') || '0', 10) || 0;
+// scoring combo + perk timers
+let combo = 0, comboT = 0, maxCombo = 0;
+let adrenT = 0, slipGrace = 0, wasSeen = false;
+let tellCD = 0, prevSlipNear = 0;
+
+// lifetime meta-progression (persisted across runs)
+const META_DEFAULTS = { runs: 0, waves: 0, bots: 0, glitchHits: 0, lifeScore: 0, bestWave: 0, bestScore: 0 };
+function loadMeta() {
+  try { return Object.assign({}, META_DEFAULTS, JSON.parse(localStorage.getItem('humanError.meta') || '{}')); }
+  catch (e) { return { ...META_DEFAULTS }; }
+}
+let meta = loadMeta();
+const RANKS = [
+  [0, 'ROOKIE BLENDER'], [600, 'STREET EXTRA'], [2000, 'CROWD REGULAR'],
+  [5000, 'CONVINCING FAKE'], [12000, 'PERFECT MIMIC'], [30000, 'GHOST IN THE CROWD'],
+];
+function rankFor(s) { let r = RANKS[0][1]; for (const [t, n] of RANKS) if (s >= t) r = n; return r; }
+function metaHtml() {
+  return `Rank: <b>${rankFor(meta.lifeScore)}</b> · best wave <b>${meta.bestWave}</b> · ` +
+    `best score <b>${meta.bestScore}</b> · <b>${meta.bots}</b> humans busted all-time`;
+}
 
 const hasPerk = (id) => perks.has(id);
 const huntersForWave = (w) => clamp(1 + Math.floor((w - 1) / 2), 1, WAVE.maxHunters);
@@ -36,6 +60,7 @@ const lockSpeed = () => 0.78 + wave * 0.05;
 // ---- wave lifecycle ----
 function startGame() {
   wave = 1; totalTime = 0; score = 0; perks = new Set(); decoyCD = 0;
+  combo = 0; comboT = 0; maxCombo = 0; adrenT = 0; slipGrace = 0; wasSeen = false;
   stats = { botsOut: 0, glitchHit: 0, glitchTotal: 0 };
   beginWave();
 }
@@ -61,6 +86,8 @@ function beginWave() {
 
 function clearWave() {
   running = false; betweenWaves = true; score += 100;
+  if (hasPerk('veteran')) { score += 60; hud.feed('Veteran bonus +60'); }
+  combo = 0; comboT = 0; hud.setCombo(0);
   let pool = ALL_PERKS.filter(p => !perks.has(p.id));
   if (pool.length < 3) pool = ALL_PERKS.slice();
   pool = pool.slice().sort(() => Math.random() - 0.5).slice(0, 3);
@@ -83,15 +110,26 @@ input.on('react', () => {
   if (sim.glitch.t > sim.glitch.t0 - sim.glitch.window) stats.glitchHit++;
   sfx.react();
 });
-input.on('decoy', tryDecoy);
+input.on('decoy', tryAbility);
 input.on('screenshot', () => {
   try { const a = document.createElement('a'); a.download = 'human-error-' + Date.now() + '.png'; a.href = cv.toDataURL('image/png'); a.click(); } catch (e) {}
 });
+input.on('clip', () => { if (clip.capture('clip')) hud.feed('🎬 Clip saved'); });
 
-function tryDecoy() {
-  if (!running || !hasPerk('decoy') || decoyCD > 0 || !player) return;
-  sim.decoys.push({ x: player.x, y: player.y, t: 4, isDecoy: true });
-  decoyCD = 12; sfx.decoy(); shake = Math.max(shake, 5); hud.feed('Decoy dropped');
+// Q-slot ability — decoy drop or blink dash, whichever perk is held.
+function tryAbility() {
+  if (!running || !player || decoyCD > 0) return;
+  if (hasPerk('decoy')) {
+    const life = hasPerk('magnet') ? 7 : 4;
+    sim.decoys.push({ x: player.x, y: player.y, t: life, isDecoy: true, strong: hasPerk('magnet') });
+    decoyCD = 12; sfx.decoy(); shake = Math.max(shake, 5); hud.feed('Decoy dropped');
+  } else if (hasPerk('blink')) {
+    const a = player.facing, hop = 84;
+    player.x = clamp(player.x + Math.cos(a) * hop, ARENA.x + 12, ARENA.x + ARENA.w - 12);
+    player.y = clamp(player.y + Math.sin(a) * hop, ARENA.y + 12, ARENA.y + ARENA.h - 12);
+    collidePillars(player, sim.pillars);
+    decoyCD = 7; sfx.decoy(); shake = Math.max(shake, 4); particles.burst(player.x, player.y, PALETTE.blue, 14); hud.feed('Blink!');
+  }
 }
 
 // ---- suspicion ----
@@ -101,16 +139,27 @@ function anyHunterSeesPlayer() {
 }
 function updateSuspicion(dt) {
   const moving = Math.hypot(player.vx, player.vy) > 4;
-  const ghosting = hasPerk('ghost') && input.keys['shift'];
-  const seen = !ghosting && anyHunterSeesPlayer();
+  const slow = !!input.keys['shift'];
+  const ghosting = hasPerk('ghost') && slow;
+  let seen = !ghosting && anyHunterSeesPlayer();
+  // slippery: short grace the moment a Hunter first picks you up
+  if (seen && !wasSeen && hasPerk('slip')) slipGrace = 0.6;
+  wasSeen = seen;
+  if (slipGrace > 0) { slipGrace = Math.max(0, slipGrace - dt); if (seen) seen = false; }
+
   let rate = 0;
   if (seen) {
     rate += humanScore(player, sim);
-    if (hasPerk('mimic') && !moving) rate *= 0.5;  // auto-blend pose
+    // low profile: a dense crowd around you muddies the read
+    if (hasPerk('lowpro') && neighborStats(player, 95, sim.agents).n >= 3) rate *= 0.5;
+    // mimic (and doppel extends it to slow-walking) auto-blends your pose
+    const blending = hasPerk('mimic') && (!moving || (hasPerk('doppel') && slow));
+    if (blending) rate *= 0.5;
     rate += 5;
   }
   let cool = -13 * (hasPerk('decay') ? 1.7 : 1);
   if (hasPerk('still') && !moving) cool *= 2;
+  if (adrenT > 0) { adrenT = Math.max(0, adrenT - dt); cool *= 2; }   // post-glitch surge
   if (rate < 4) rate = cool;
   if (hasPerk('calm') && rate > 0) rate *= 0.7;
   suspicion = clamp(suspicion + rate * dt, 0, 100);
@@ -126,8 +175,12 @@ function resolveEvents() {
       if (b.alive === false) continue;
       particles.burst(b.x, b.y, PALETTE.pink, 22);
       sim.removeAgent(b);
-      stats.botsOut++; score += 10; shake = Math.max(shake, 8);
-      hud.feed('A human was caught!'); sfx.bot();
+      // style combo: each bot busted inside the window stacks a multiplier
+      combo++; comboT = 5; maxCombo = Math.max(maxCombo, combo);
+      const mult = 1 + Math.min(combo - 1, 8) * 0.25;   // up to ×3
+      stats.botsOut++; score += Math.round(10 * mult); shake = Math.max(shake, 8);
+      hud.setCombo(combo);
+      hud.feed(combo >= 2 ? `Human caught! ×${combo}` : 'A human was caught!'); sfx.bot();
     } else if (e.type === 'popDecoy') {
       const d = e.decoy; const i = sim.decoys.indexOf(d); if (i >= 0) sim.decoys.splice(i, 1);
       e.hunter.target = null; particles.burst(d.x, d.y, PALETTE.blue, 12);
@@ -145,6 +198,7 @@ function endGame(reason) {
   killcam = { x: player.x, y: player.y, t: 0, dur: 2.4, label: 'CAUGHT — too human.' };
   particles.burst(player.x, player.y, PALETTE.pink, 40); shake = 18;
   sfx.catch();
+  if (clip.capture('busted')) hud.feed('🎬 Highlight clip saved');   // auto-clip the bust
 }
 function showEndScreen() {
   if (!pendingEnd) return;
@@ -152,15 +206,30 @@ function showEndScreen() {
   score += Math.floor(totalTime);
   const isBest = score > best;
   if (isBest) { best = score; localStorage.setItem('humanError.best', String(best)); }
+
+  // fold this run into lifetime meta-progression
+  const wavesCleared = wave - 1;
+  const prevRank = rankFor(meta.lifeScore);
+  meta.runs++; meta.waves += wavesCleared; meta.bots += stats.botsOut;
+  meta.glitchHits += stats.glitchHit; meta.lifeScore += score;
+  meta.bestWave = Math.max(meta.bestWave, wavesCleared);
+  meta.bestScore = Math.max(meta.bestScore, score);
+  try { localStorage.setItem('humanError.meta', JSON.stringify(meta)); } catch (e) {}
+  const rankedUp = rankFor(meta.lifeScore) !== prevRank;
+
   hud.showEnd({
     title: 'CAUGHT', win: false,
     sub: (reason === 'suspicion' ? 'Suspicion maxed on wave ' : 'Hunter locked you on wave ') + wave + '.',
     statsHtml:
-      `<span><b>${wave - 1}</b>waves cleared</span>` +
+      `<span><b>${wavesCleared}</b>waves cleared</span>` +
       `<span><b>${score}</b>score${isBest ? ' ★' : ''}</span>` +
       `<span><b>${best}</b>best</span>` +
-      `<span><b>${stats.botsOut}</b>bots busted</span>`,
-    flavor: 'Every caught human is a punchline. Grab a perk, blend harder, push the wave count.',
+      `<span><b>${stats.botsOut}</b>humans busted</span>` +
+      `<span><b>×${maxCombo}</b>top combo</span>` +
+      `<span><b>${stats.glitchHit}/${stats.glitchTotal}</b>glitches nailed</span>`,
+    flavor: rankedUp
+      ? `RANK UP → ${rankFor(meta.lifeScore)}. Every caught human is a punchline — push the wave count.`
+      : `Rank: ${rankFor(meta.lifeScore)} · ${meta.bots} humans busted all-time. Grab a perk, blend harder, climb.`,
   });
   pendingEnd = null;
 }
@@ -177,6 +246,7 @@ function tick(ts) {
   if (running) {
     waveTime -= dt; totalTime += dt;
     if (decoyCD > 0) decoyCD = Math.max(0, decoyCD - dt);
+    if (comboT > 0) { comboT -= dt; if (comboT <= 0) { combo = 0; hud.setCombo(0); } }
     const ti = Math.ceil(waveTime);
     if (ti !== lastTimerInt && ti >= 0) {
       lastTimerInt = ti; hud.setTimer(ti);
@@ -185,13 +255,25 @@ function tick(ts) {
     if (waveTime <= 0) { waveTime = 0; clearWave(); }
     else {
       sim.events.length = 0;
+      const preG = !!sim.glitch;
       const g = sim.stepGlitch(dt);
       if (g) { hud.showGlitch(g); sfx.glitch(); shake = Math.max(shake, 7); stats.glitchTotal++; }
-      if (!sim.glitch) hud.hideGlitch();
+      if (!sim.glitch) { hud.hideGlitch(); if (preG && hasPerk('adren')) adrenT = 4; }   // adrenaline surge
 
       const intent = input.intent({ sprintPerk: hasPerk('sprint') });
       sim.applyHumanIntent(player, dt, intent);
       sim.stepCrowd(dt);
+
+      // faint audible "tell" when a nearby bot starts slipping (rising edge, throttled)
+      tellCD = Math.max(0, tellCD - dt);
+      let slipNear = 0;
+      for (const a of sim.agents) {
+        if (!a.slipping || !a.botHider) continue;
+        const dx = a.x - player.x, dy = a.y - player.y;
+        if (dx * dx + dy * dy < 220 * 220) slipNear++;
+      }
+      if (slipNear > prevSlipNear && tellCD <= 0) { sfx.tell(); tellCD = 0.35; }
+      prevSlipNear = slipNear;
       for (const h of sim.hunters) { updateHunter(h, dt, sim); if (!running) break; }
       resolveEvents();
       if (running) updateSuspicion(dt);
@@ -214,9 +296,11 @@ function tick(ts) {
 // ---- boot ----
 function start() {
   initAudio();
+  clip.start();
   hud.hideOverlays();
   startGame();
 }
 document.getElementById('startBtn').addEventListener('click', start);
 document.getElementById('againBtn').addEventListener('click', start);
+hud.setMeta(metaHtml());
 requestAnimationFrame(frame);

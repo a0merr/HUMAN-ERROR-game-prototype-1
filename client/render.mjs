@@ -3,7 +3,7 @@
 // Pure presentation: draws a CrowdSim snapshot. Shared by solo + mp client.
 // ============================================================
 
-import { ARENA, BODY_R, POSE, PALETTE, SKINS, W, H } from '../engine/config.mjs';
+import { ARENA, BODY_R, BODY_SHAPES, POSE, PALETTE, SKINS, W, H } from '../engine/config.mjs';
 import { clamp } from '../engine/math.mjs';
 
 export class Renderer {
@@ -28,8 +28,12 @@ export class Renderer {
     const locked = isHunter && a.target && a.target.isPlayer;
     const bodyCol = isHunter ? (locked ? PALETTE.pink : '#3aa0ff') : skin.body;
     const headCol = isHunter ? '#cfe6ff' : skin.head;
+    const bs = BODY_SHAPES[a.shape || 0] || BODY_SHAPES[0];
     ctx.save(); ctx.translate(a.x, a.y);
-    ctx.fillStyle = 'rgba(0,0,0,.28)'; ctx.beginPath(); ctx.ellipse(0, 11, 9, 3.2, 0, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = 'rgba(0,0,0,.28)'; ctx.beginPath(); ctx.ellipse(0, 11, 9 * bs.sx, 3.2, 0, 0, Math.PI * 2); ctx.fill();
+    // silhouette variety: non-uniform scale around the body authored at 10×12.
+    // Hunters keep shape 0 so the rotated gun never distorts.
+    if (!isHunter) ctx.scale(bs.bw / 10, bs.bh / 12);
     const swing = moving ? Math.sin(t * 11) * 4 : 0;
     ctx.strokeStyle = skin.dark; ctx.lineWidth = 3.2; ctx.lineCap = 'round';
     ctx.beginPath(); ctx.moveTo(-2.5, 4); ctx.lineTo(-2.5 + swing * 0.4, 11); ctx.stroke();
@@ -53,6 +57,18 @@ export class Renderer {
     if (isHunter) {
       ctx.fillStyle = 'rgba(10,20,35,.9)'; ctx.save(); ctx.translate(0, -10 + bob); ctx.rotate(a.facing);
       this._roundRect(1, -2.4, 4.5, 4.8, 1.5); ctx.fill(); ctx.restore();
+    }
+    // TELL marker — the product. A body mid-"slip" (acting too human) gets a
+    // loud, pulsing callout so the joke reads at a glance / on a stream clip.
+    if (a.slipping && a.slip) {
+      const ico = { sprint: '💨', flinch: '😱', overdance: '🤪', bunch: '👀' }[a.slip] || '⚠️';
+      const pulse = 0.5 + 0.5 * Math.sin(a.animPhase * 16);
+      ctx.save();
+      ctx.globalAlpha = 0.5 + 0.45 * pulse; ctx.strokeStyle = PALETTE.pink; ctx.lineWidth = 2.4;
+      ctx.beginPath(); ctx.arc(0, -1, 15 + pulse * 4, 0, Math.PI * 2); ctx.stroke();
+      ctx.globalAlpha = 1; ctx.font = '15px "Segoe UI Emoji", Segoe UI'; ctx.textAlign = 'center';
+      ctx.fillText(ico, 0, -27 + bob);
+      ctx.restore();
     }
     // taunt emote bubble (multiplayer flavor / clip surface)
     if (a.tauntT > 0) {

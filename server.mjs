@@ -13,10 +13,11 @@ import crypto from 'node:crypto';
 import os from 'node:os';
 import { fileURLToPath } from 'node:url';
 
-import { ARENA, BODY_R, MAPS, SKINS, POSE } from './engine/config.mjs';
+import { ARENA, BODY_R, MAPS, SKINS, POSE, skinIndex } from './engine/config.mjs';
 import { clamp, dist, lerpAngle } from './engine/math.mjs';
 import { CrowdSim } from './engine/sim.mjs';
 import { freePoint } from './engine/geometry.mjs';
+import { makeHunter, updateHunter } from './engine/hunter.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PORT = process.env.PORT || 8080;
@@ -109,6 +110,7 @@ const MATCH_SECS = 90, TAG_RANGE = 34, TAG_CONE = 1.1, MISS_STUN = 1.4;
 const RECONNECT_GRACE = 20000;   // ms a dropped player's body is held for reconnect
 const HIDER_SPEED = 140, HUNTER_SPEED = 132, NPC_SPEED = 58;
 const MP_NPCS = 30, MP_BOTS = 6;
+const AI_HUNTER_ID_BASE = 900000;   // stable ids for server-driven AI hunters (below human 1e6 range)
 
 // Player network ids live in a high range so they never collide with the
 // engine's per-match crowd ids (which start at 1). The human's body in the
@@ -143,22 +145,37 @@ function broadcast(room, obj) { const s = JSON.stringify(obj); for (const sock o
 const humanHiders = (room) => [...room.players.values()].filter(p => p.role === 'hider' && p.agent && p.agent.alive);
 const theHunter = (room) => [...room.players.values()].find(p => p.role === 'hunter');
 
+// Spawn a server-driven AI hunter into the room's shared sim. Used when no
+// human wants the hunter seat (lone player) or when a human hunter drops out.
+function spawnAiHunter(room) {
+  if (!room.sim) return null;
+  const h = makeHunter(room.aiHunters.length, 1, room.sim.rng, 3);
+  h.id = AI_HUNTER_ID_BASE + room.aiHunters.length;
+  room.aiHunters.push(h);
+  return h;
+}
+
 function startMatch(room) {
   const humans = [...room.players.values()];
   if (humans.length === 0) return;
 
   const map = MAPS[(Math.random() * MAPS.length) | 0];
   room.mapId = map.id;
-  room.skin = ['slate', 'sand', 'moss', 'rose', 'steel'].indexOf(map.skin);
+  room.skin = skinIndex(map.skin);
   room.timer = MATCH_SECS;
 
   // build the shared crowd sim for this match
   const sim = new CrowdSim({ seed: (Math.random() * 0xffffffff) >>> 0, mapId: map.id, npcCount: MP_NPCS, botCount: MP_BOTS });
   sim.buildCrowd();
   room.sim = sim;
+  room.aiHunters = []; room.aiScore = 0;
 
-  // assign roles: one random hunter, rest hiders
-  const hunterIdx = (Math.random() * humans.length) | 0;
+  // Role assignment that never strands a lone player in an empty lobby:
+  //  - 2+ humans  -> one human Hunter, the rest hiders (human-vs-human)
+  //  - 1 human    -> that human hides; a server-driven AI Hunter stalks the crowd
+  // Either way the dumb-human bots fill out the hider crowd so the arena is alive.
+  const humanHunt = humans.length >= 2;
+  const hunterIdx = humanHunt ? (Math.random() * humans.length) | 0 : -1;
   humans.forEach((p, i) => {
     const role = i === hunterIdx ? 'hunter' : 'hider';
     const agent = sim.addHuman({ role });
@@ -168,9 +185,10 @@ function startMatch(room) {
     p.role = role; p.agent = agent; p.stunT = 0; p.score = 0;
     p.input = { up: 0, down: 0, left: 0, right: 0, shift: 0, dance: 0 }; p.tagEdge = false;
   });
+  if (!humanHunt) spawnAiHunter(room);
 
   room.state = 'playing';
-  broadcast(room, { t: 'start', skin: room.skin, mapId: map.id });
+  broadcast(room, { t: 'start', skin: room.skin, mapId: map.id, ai: room.aiHunters.length });
 }
 
 function doTag(room, hunter) {
@@ -206,10 +224,27 @@ function doTag(room, hunter) {
   if (humanHiders(room).length === 0 && [...room.players.values()].some(p => p.role === 'hider')) endMatch(room, 'hunter');
 }
 
+// Resolve a catch emitted by an AI hunter (lone-player / hunter-left matches).
+function resolveAiCatch(room, e) {
+  const sim = room.sim;
+  const a = e.type === 'popBot' ? e.agent : e.agent;
+  if (!a || a.alive === false) return;
+  const owner = e.type === 'catchHider' ? [...room.players.values()].find(p => p.agent === a) : null;
+  const who = e.type === 'popBot' ? 'a dumb-human bot' : (owner ? owner.name : 'a human');
+  sim.removeAgent(a);
+  for (const h of room.aiHunters) if (h.target === a) { h.target = null; h.lock = 0; }
+  room.aiScore = (room.aiScore || 0) + 1;
+  broadcast(room, { t: 'event', msg: 'The AI Hunter ' + (e.type === 'popBot' ? 'caught ' : 'CAUGHT ') + who + '!' });
+  broadcast(room, { t: 'caught', id: a.id, x: Math.round(a.x), y: Math.round(a.y), name: who });
+  if (e.type === 'catchHider' && humanHiders(room).length === 0
+      && [...room.players.values()].some(p => p.role === 'hider')) endMatch(room, 'hunter');
+}
+
 function endMatch(room, winner) {
   room.state = 'over';
   const hunter = theHunter(room);
-  broadcast(room, { t: 'over', winner, score: hunter ? hunter.score : 0 });
+  const score = hunter ? hunter.score : (room.aiScore || 0);
+  broadcast(room, { t: 'over', winner, score });
 }
 
 function tick(room, dt) {
@@ -240,19 +275,37 @@ function tick(room, dt) {
   }
   sim.stepCrowd(dt);
 
+  // advance any server-driven AI hunters through the SHARED hunter brain,
+  // then resolve the catch events they emit.
+  if (room.aiHunters && room.aiHunters.length) {
+    sim.events.length = 0;
+    for (const h of room.aiHunters) updateHunter(h, dt, sim);
+    for (const e of sim.events) resolveAiCatch(room, e);
+    if (room.state !== 'playing') return;   // a catch may have ended the match
+  }
+
   // snapshot
   const bodies = [];
   for (const a of sim.agents) {
     if (!a.alive) continue;
     const kind = a.role === 'hunter' ? 'hunter' : (a.kind === 'human' ? 'hider' : 'npc');
     const s = {
-      id: a.id, k: kind,
+      id: a.id, k: kind, sh: a.shape || 0,
       x: Math.round(a.x * 10) / 10, y: Math.round(a.y * 10) / 10,
       f: Math.round(a.facing * 100) / 100, p: POSE_WIRE[a.pose] ?? 0,
       ph: Math.round((a.dancePhase || a.animPhase) * 100) / 100,
     };
     if (a.tauntT > 0 && a.taunt >= 0) s.e = a.taunt;
+    if (a.slipping && a.slip) s.sl = a.slip[0];   // tell-tale slip flag for juicing on clients
     bodies.push(s);
+  }
+  // AI hunters live outside sim.agents — emit them so clients draw the threat
+  for (const h of room.aiHunters || []) {
+    bodies.push({
+      id: h.id, k: 'hunter', sh: 0,
+      x: Math.round(h.x * 10) / 10, y: Math.round(h.y * 10) / 10,
+      f: Math.round(h.facing * 100) / 100, p: 1, ph: 0,
+    });
   }
   const anyHumanHiders = [...room.players.values()].some(p => p.role === 'hider');
   const hunter = theHunter(room);
@@ -291,7 +344,18 @@ function joinRoom(sock, room, name, token) {
   sock._player = player; room.players.set(sock, player);
   if (token) room.byToken.set(token, player);
   wsSend(sock, JSON.stringify({ t: 'joined', id: player.id, room: room.code, you: player.name }));
-  sendLobby(room);
+  // drop-in: a fresh player joining a live match enters immediately as a hider
+  // (no "waiting" screen, no spectating until next round)
+  if (room.state === 'playing' && room.sim) {
+    const agent = room.sim.addHuman({ role: 'hider' });
+    agent.id = player.id; agent.skin = Math.max(0, room.skin || 0);
+    const fp = freePoint(room.sim.pillars, room.sim.rng); agent.x = fp.x; agent.y = fp.y;
+    player.role = 'hider'; player.agent = agent;
+    broadcast(room, { t: 'event', msg: player.name + ' dropped in!' });
+    wsSend(sock, JSON.stringify({ t: 'start', skin: room.skin, mapId: room.mapId, resumed: true }));
+  } else {
+    sendLobby(room);
+  }
 }
 function onMessage(sock, msg) {
   if (msg.t === 'create') { if (sock._player) return; joinRoom(sock, createRoom(), msg.name, msg.token); }
@@ -317,7 +381,7 @@ function onMessage(sock, msg) {
   else if (msg.t === 'again') {
     const room = sock._player.room;
     if (room.state === 'over') {
-      room.state = 'lobby'; room.sim = null;
+      room.state = 'lobby'; room.sim = null; room.aiHunters = []; room.aiScore = 0;
       for (const pl of room.players.values()) { pl.role = 'spectator'; pl.agent = null; }
       sendLobby(room);
     }
@@ -335,8 +399,17 @@ function dropPlayer(room, p) {
   if (p.agent && room.sim) room.sim.removeAgent(p.agent);
   if (room.players.size === 0 && room.byToken.size === 0) { rooms.delete(room.code); return; }
   if (room.state === 'playing') {
-    if (p.role === 'hunter') endMatch(room, 'hiders');
-    else if (humanHiders(room).length === 0 && [...room.players.values()].some(x => x.role === 'hider')) endMatch(room, 'hunter');
+    if (p.role === 'hunter') {
+      // don't strand the hiders — hand the hunt to an AI so the round continues
+      const hidersAlive = [...room.players.values()].some(x => x.role === 'hider' && x.agent && x.agent.alive);
+      if (room.sim && hidersAlive) {
+        if (!room.aiHunters) { room.aiHunters = []; room.aiScore = 0; }
+        spawnAiHunter(room);
+        broadcast(room, { t: 'event', msg: 'Hunter bailed — an AI Hunter takes over!' });
+      } else endMatch(room, 'hiders');
+    } else if (humanHiders(room).length === 0 && [...room.players.values()].some(x => x.role === 'hider')) {
+      endMatch(room, 'hunter');
+    }
   }
   sendLobby(room);
 }
