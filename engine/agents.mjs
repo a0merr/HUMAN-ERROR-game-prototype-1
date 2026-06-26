@@ -6,7 +6,7 @@
 
 import { ARENA, BODY_R, POSE, KIND, TUNING } from './config.mjs';
 import { clamp, dist, lerpAngle } from './math.mjs';
-import { collidePillars, clampArena, freePoint } from './geometry.mjs';
+import { collidePillars, clampArena, freePoint, insidePillar } from './geometry.mjs';
 
 let _id = 0;
 export function resetIds() { _id = 0; }
@@ -27,6 +27,15 @@ export function makeAgent(rng, kind = KIND.NPC) {
 }
 
 function newWaypoint(a, ctx) {
+  // ~40% of the time, drift toward another body — the crowd self-organizes into
+  // chatting knots instead of an even scatter, so there are real clumps to hide in.
+  if (ctx.agents && ctx.agents.length > 5 && ctx.rng.chance(0.4)) {
+    const o = ctx.rng.pick(ctx.agents);
+    if (o && o !== a && o.role !== 'hunter') {
+      const x = o.x + ctx.rng.range(-24, 24), y = o.y + ctx.rng.range(-24, 24);
+      if (!insidePillar(x, y, ctx.pillars)) { a.wpx = x; a.wpy = y; return; }
+    }
+  }
   const p = freePoint(ctx.pillars, ctx.rng);
   a.wpx = p.x; a.wpy = p.y;
 }
@@ -45,7 +54,10 @@ export function updateNPC(a, dt, ctx) {
     else if (r < 0.78) { a.state = POSE.WALK; newWaypoint(a, ctx); a.timer = ctx.rng.range(2.0, 4.0); }
     else { a.state = POSE.DANCE; a.timer = ctx.rng.range(1.6, 3.6); }
   }
-  if (a.state === POSE.IDLE) { a.vx = 0; a.vy = 0; }
+  if (a.state === POSE.IDLE) {
+    a.vx = 0; a.vy = 0;
+    a.facing += Math.sin(a.animPhase * 0.7 + a.id) * dt * 0.8;   // idle glancing-around fidget
+  }
   else if (a.state === POSE.WALK) {
     const dx = a.wpx - a.x, dy = a.wpy - a.y, d = Math.hypot(dx, dy);
     if (d < 6) { a.state = POSE.IDLE; a.timer = ctx.rng.range(0.6, 1.8); a.vx = a.vy = 0; }

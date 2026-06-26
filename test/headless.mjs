@@ -28,7 +28,7 @@ function assert(cond, msg) { if (!cond) { console.error('FAIL:', msg); process.e
     for (const e of sim.events) if (e.type === 'popBot' && e.agent.alive !== false) { pops++; sim.removeAgent(e.agent); }
   }
   assert(glitches > 0, 'solo: glitches should fire over 90s');
-  assert(pops <= 3, 'solo: at most 3 bots can pop (no dead-target double counts), got ' + pops);
+  assert(pops <= sim.botCount, 'solo: at most botCount bots can pop (no dead-target double counts), got ' + pops + '/' + sim.botCount);
   assert(sim.agents.includes(player), 'solo: player still present');
   assert(maxPlayerLock(sim.hunters, player) >= 0, 'solo: lock readable');
   console.log('solo OK — glitches=%d botPops=%d agents=%d', glitches, pops, sim.agents.length);

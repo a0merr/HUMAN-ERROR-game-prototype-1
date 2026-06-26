@@ -10,12 +10,23 @@ import { clamp, dist, lerpAngle } from './math.mjs';
 import { collidePillars, losBlocked, inCone, freePoint } from './geometry.mjs';
 import { humanScore } from './agents.mjs';
 
+// Hunter archetypes — each scans/chases/commits differently, so a wave of
+// several hunters feels like distinct guards rather than clones. Deterministic
+// (assigned from the match RNG).
+const ARCHETYPES = [
+  { id: 'patrol',    scanR: 168, scanHalf: 0.82, roam: 78,  chase: 104, inspect: 88, lock: 0.9 },  // wide eyes, methodical
+  { id: 'sprinter',  scanR: 140, scanHalf: 0.50, roam: 98,  chase: 152, inspect: 106, lock: 1.0 }, // tunnel vision, runs you down
+  { id: 'inspector', scanR: 156, scanHalf: 0.62, roam: 80,  chase: 116, inspect: 78, lock: 1.28 }, // creeps close, commits hard
+];
+
 export function makeHunter(i, total, rng, wave = 1) {
   const fx = ARENA.x + ARENA.w * ((i + 1) / (total + 1));
+  const a = rng ? ARCHETYPES[rng.int(0, ARCHETYPES.length - 1)] : ARCHETYPES[i % ARCHETYPES.length];
   return {
-    kind: 'ai-hunter', role: 'hunter',
+    kind: 'ai-hunter', role: 'hunter', arch: a.id,
     x: fx, y: ARENA.y + 28, vx: 0, vy: 0, facing: Math.PI / 2,
-    scanR: 150 + wave * 8, scanHalf: 0.62, target: null, retargetT: rng.range(0, 0.4),
+    scanR: a.scanR + wave * 6, scanHalf: a.scanHalf, target: null, retargetT: rng.range(0, 0.4),
+    spd: { roam: a.roam, chase: a.chase, inspect: a.inspect }, lockMul: a.lock,
     catchR: TUNING.catchR, px: 0, py: 0, lock: 0, stuckT: 0,
     lastx: fx, lasty: ARENA.y + 28, inspect: 0,
   };
@@ -55,7 +66,7 @@ export function updateHunter(h, dt, ctx) {
   const locking = lockTarget && seesAgent(h, lockTarget, pillars);
   if (locking) {
     const near = dist(h.x, h.y, lockTarget.x, lockTarget.y) < 90 ? 1.4 : 1;
-    h.lock = clamp(h.lock + dt * ctx.lockSpeed * near, 0, 1);
+    h.lock = clamp(h.lock + dt * ctx.lockSpeed * near * (h.lockMul || 1), 0, 1);
     h.inspect = 1;
   } else {
     h.lock = clamp(h.lock - dt * 0.7, 0, 1);
@@ -71,7 +82,8 @@ export function updateHunter(h, dt, ctx) {
     tx = h.px; ty = h.py;
   }
   const dx = tx - h.x, dy = ty - h.y, d = Math.hypot(dx, dy) || 1;
-  const hSpeed = h.target ? (h.inspect > 0.3 && h.lock > 0.3 ? TUNING.hunterInspect : TUNING.hunterChase) : TUNING.hunterRoam;
+  const sp = h.spd || { roam: TUNING.hunterRoam, chase: TUNING.hunterChase, inspect: TUNING.hunterInspect };
+  const hSpeed = h.target ? (h.inspect > 0.3 && h.lock > 0.3 ? sp.inspect : sp.chase) : sp.roam;
   h.x = clamp(h.x + dx / d * hSpeed * dt, ARENA.x + BODY_R, ARENA.x + ARENA.w - BODY_R);
   h.y = clamp(h.y + dy / d * hSpeed * dt, ARENA.y + BODY_R, ARENA.y + ARENA.h - BODY_R);
   collidePillars(h, pillars);

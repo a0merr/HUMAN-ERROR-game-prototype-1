@@ -10,6 +10,7 @@ import { collidePillars, clampArena } from '../engine/geometry.mjs';
 import { initAudio, beep, sfx as audioSfx } from './audio.mjs';
 import { ClipRecorder } from './clip.mjs';
 import { drawSurveillance } from './style.mjs';
+import { drawFigure } from './figure.mjs';
 const camCode = (s) => { s = Math.max(0, s | 0); const m = (s / 60) | 0, r = s % 60; return (m < 10 ? '0' : '') + m + ':' + (r < 10 ? '0' : '') + r; };
 
 const cv = document.getElementById('game');
@@ -177,42 +178,34 @@ function renderFeed() { elFeed.innerHTML = feedItems.map(f => `<div style="opaci
 function roundRect(x, y, w, h, r) { ctx.beginPath(); ctx.moveTo(x + r, y); ctx.arcTo(x + w, y, x + w, y + h, r); ctx.arcTo(x + w, y + h, x, y + h, r); ctx.arcTo(x, y + h, x, y, r); ctx.arcTo(x, y, x + w, y, r); ctx.closePath(); }
 function drawPerson(b, t) {
   const isHunter = b.k === 'hunter';
-  const moving = b._moving;
   const dancing = b.p === POSE.DANCE;
   const sk = SKINS[crowdSkin] || SKINS[0];
-  const bodyCol = isHunter ? '#ff2e63' : sk.body, headCol = isHunter ? '#cfe6ff' : sk.head;
-  const bs = BODY_SHAPES[b.sh || 0] || BODY_SHAPES[0];
-  ctx.save(); ctx.translate(b.x, b.y);
-  ctx.fillStyle = 'rgba(0,0,0,.28)'; ctx.beginPath(); ctx.ellipse(0, 11, 9 * bs.sx, 3.2, 0, 0, Math.PI * 2); ctx.fill();
-  if (!isHunter) ctx.scale(bs.bw / 10, bs.bh / 12);
-  const swing = moving ? Math.sin(t * 11 + b.id) * 4 : 0;
-  ctx.strokeStyle = sk.dark; ctx.lineWidth = 3.2; ctx.lineCap = 'round';
-  ctx.beginPath(); ctx.moveTo(-2.5, 4); ctx.lineTo(-2.5 + swing * 0.4, 11); ctx.stroke();
-  ctx.beginPath(); ctx.moveTo(2.5, 4); ctx.lineTo(2.5 - swing * 0.4, 11); ctx.stroke();
-  const bob = dancing ? Math.sin(b.ph) * 1.6 : (moving ? Math.abs(Math.sin(t * 11 + b.id)) * 0.8 : Math.sin(t * 2 + b.id) * 0.5);
-  ctx.fillStyle = bodyCol; roundRect(-5, -6 + bob, 10, 12, 4); ctx.fill();
-  ctx.strokeStyle = bodyCol; ctx.lineWidth = 3;
-  if (dancing) { const w = Math.sin(b.ph * 1.5) * 0.5; ctx.beginPath(); ctx.moveTo(-4, -3 + bob); ctx.lineTo(-8, -9 + w * 3); ctx.stroke(); ctx.beginPath(); ctx.moveTo(4, -3 + bob); ctx.lineTo(8, -9 - w * 3); ctx.stroke(); }
-  else { ctx.beginPath(); ctx.moveTo(-4, -2 + bob); ctx.lineTo(-5, 3); ctx.stroke(); ctx.beginPath(); ctx.moveTo(4, -2 + bob); ctx.lineTo(5, 3); ctx.stroke(); }
-  ctx.fillStyle = headCol; ctx.beginPath(); ctx.arc(0, -10 + bob, 5, 0, Math.PI * 2); ctx.fill();
-  if (isHunter) { ctx.fillStyle = 'rgba(10,20,35,.9)'; ctx.save(); ctx.translate(0, -10 + bob); ctx.rotate(b.f); roundRect(1, -2.4, 4.5, 4.8, 1.5); ctx.fill(); ctx.restore(); }
+  drawFigure(ctx, {
+    x: b.x, y: b.y, facing: b.f, moving: b._moving, dancing,
+    phase: t, seed: b.id, dancePhase: b.ph, shapeIdx: b.sh || 0,
+    bodyCol: isHunter ? '#ff2e63' : sk.body,
+    headCol: isHunter ? '#cfe6ff' : sk.head,
+    darkCol: isHunter ? '#0a1422' : sk.dark,
+    isHunter,
+  });
   if (b.e !== undefined && b.e !== null && EMOJI[b.e]) {
+    ctx.save(); ctx.translate(b.x, b.y);
     ctx.font = '16px Segoe UI Emoji, Segoe UI'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-    ctx.fillText(EMOJI[b.e], 0, -24 + bob); ctx.textBaseline = 'alphabetic';
+    ctx.fillText(EMOJI[b.e], 0, -24); ctx.textBaseline = 'alphabetic';
+    ctx.restore();
   }
   // TELL marker — a bot mid-slip (sent as b.sl: s/f/o/b) gets a pulsing callout
   if (b.sl) {
     const ico = { s: '💨', f: '😱', o: '🤪', b: '👀' }[b.sl] || '⚠️';
     const pulse = 0.5 + 0.5 * Math.sin((t * 16) + b.id);
-    ctx.save();
+    ctx.save(); ctx.translate(b.x, b.y);
     ctx.shadowColor = '#ff2e63'; ctx.shadowBlur = 12 + pulse * 6;   // glow survives downscaling into clips/thumbnails
     ctx.globalAlpha = 0.55 + 0.4 * pulse; ctx.strokeStyle = '#ff2e63'; ctx.lineWidth = 3;
-    ctx.beginPath(); ctx.arc(0, -1, 16 + pulse * 5, 0, Math.PI * 2); ctx.stroke();
+    ctx.beginPath(); ctx.arc(0, -2, 16 + pulse * 5, 0, Math.PI * 2); ctx.stroke();
     ctx.globalAlpha = 1; ctx.shadowBlur = 6; ctx.font = '16px "Segoe UI Emoji", Segoe UI'; ctx.textAlign = 'center';
-    ctx.fillText(ico, 0, -28 + bob);
+    ctx.fillText(ico, 0, -27);
     ctx.restore();
   }
-  ctx.restore();
 }
 
 // Advance the predicted local body from current input, then nudge it toward the

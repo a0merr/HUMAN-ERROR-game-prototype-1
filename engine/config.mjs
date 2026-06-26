@@ -39,8 +39,8 @@ export const TUNING = {
 // Wave roguelite pacing (solo).
 export const WAVE = {
   secs: 40,
-  npcCount: 33,
-  botCount: 3,
+  npcCount: 46,   // denser crowd — easier to vanish into, livelier on camera
+  botCount: 4,
   maxHunters: 4,
 };
 

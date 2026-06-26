@@ -34,7 +34,7 @@ let best = parseInt(localStorage.getItem('humanError.best') || '0', 10) || 0;
 // scoring combo + perk timers
 let combo = 0, comboT = 0, maxCombo = 0;
 let adrenT = 0, slipGrace = 0, wasSeen = false;
-let tellCD = 0, prevSlipNear = 0;
+let tellCD = 0, prevSlipNear = 0, dustCD = 0;
 let fxFlash = 0, fxDanger = 0;   // surveillance post-FX: chroma punch + edge-tint heat
 const camCode = (s) => { s = Math.max(0, s | 0); const m = (s / 60) | 0, r = s % 60; return (m < 10 ? '0' : '') + m + ':' + (r < 10 ? '0' : '') + r; };
 
@@ -240,8 +240,9 @@ function updateSuspicion(dt) {
   let rate = 0;
   if (seen) {
     rate += humanScore(player, sim);
-    // low profile: a dense crowd around you muddies the read
-    if (hasPerk('lowpro') && neighborStats(player, 95, sim.agents).n >= 3) rate *= 0.5;
+    // hiding in a crowd knot muddies the read — the core fantasy. Everyone gets
+    // a small blend bonus; Low Profile deepens it.
+    if (neighborStats(player, 90, sim.agents).n >= 3) rate *= hasPerk('lowpro') ? 0.5 : 0.85;
     // mimic (and doppel extends it to slow-walking) auto-blends your pose
     const blending = hasPerk('mimic') && (!moving || (hasPerk('doppel') && slow));
     if (blending) rate *= 0.5;
@@ -286,7 +287,9 @@ function endGame(reason) {
   hud.setVignette(0);
   pendingEnd = { reason };
   killcam = { x: player.x, y: player.y, t: 0, dur: 2.4, label: 'CAUGHT — too human.' };
-  particles.burst(player.x, player.y, PALETTE.pink, 40); shake = 18; fxFlash = 1;
+  particles.burst(player.x, player.y, PALETTE.pink, 58);
+  particles.burst(player.x, player.y, PALETTE.ink, 18);
+  shake = 24; fxFlash = 1;
   sfx.catch();
   if (clip.capture('busted')) hud.feed('🎬 Highlight clip saved');   // auto-clip the bust
 }
@@ -354,6 +357,10 @@ function tick(ts) {
 
       const intent = input.intent({ sprintPerk: hasPerk('sprint') });
       sim.applyHumanIntent(player, dt, intent);
+      // footstep dust when moving at human speed (not the slow NPC blend-walk) —
+      // a visual reminder that fast = obviously human
+      if (dustCD > 0) dustCD -= dt;
+      if (Math.hypot(player.vx, player.vy) > 120 && dustCD <= 0) { dustCD = 0.11; particles.puff(player.x, player.y + 10, 'rgba(150,170,200,0.5)'); }
       sim.stepCrowd(dt);
 
       // faint audible "tell" when a nearby bot starts slipping (rising edge, throttled)

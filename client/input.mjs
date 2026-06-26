@@ -8,6 +8,9 @@ export class Input {
   constructor() {
     this.keys = {};
     this.handlers = {};   // name -> fn
+    this.move = { ix: 0, iy: 0 };   // analog touch stick (-1..1), merged into intent
+    this.touchSlow = false;         // virtual "blend" (slow walk) from a touch button
+    this.touchDance = false;        // virtual dance hold from a touch button
     this._down = (e) => {
       const k = e.key.toLowerCase();
       const wasUp = !this.keys[k];

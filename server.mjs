@@ -109,7 +109,7 @@ server.on('upgrade', (req, sock) => {
 const MATCH_SECS = 90, TAG_RANGE = 34, TAG_CONE = 1.1, MISS_STUN = 1.4;
 const RECONNECT_GRACE = 20000;   // ms a dropped player's body is held for reconnect
 const HIDER_SPEED = 140, HUNTER_SPEED = 132, NPC_SPEED = 58;
-const MP_NPCS = 30, MP_BOTS = 6;
+const MP_NPCS = 42, MP_BOTS = 6;   // denser crowd so hiders actually have cover
 const AI_HUNTER_ID_BASE = 900000;   // stable ids for server-driven AI hunters (below human 1e6 range)
 
 // Player network ids live in a high range so they never collide with the
