@@ -22,7 +22,7 @@ export function makeAgent(rng, kind = KIND.NPC) {
     dancePhase: rng.angle(), animPhase: rng.angle(), facing: rng.angle(),
     reacting: false, reactT: 0, reacted: false,
     slipT: rng.range(2.5, 6), slipping: false, slip: '', slipDur: 0, sdx: 0, sdy: 0,
-    skin: 0, taunt: 0, tauntT: 0, alive: true,
+    skin: 0, shape: 0, taunt: 0, tauntT: 0, alive: true,
   };
 }
 
@@ -112,6 +112,19 @@ export function runReaction(a, dt, ctx) {
     a.vx = a.vy = 0; a.state = POSE.IDLE;
   } else if (g.type === 'wave') {
     a.state = POSE.DANCE; a.dancePhase += dt * 10; a.vx = a.vy = 0;
+  } else if (g.type === 'scatter') {
+    // bolt to the nearest wall
+    const dl = a.x - A.x, dr = A.x + A.w - a.x, du = a.y - A.y, dd = A.y + A.h - a.y;
+    const m = Math.min(dl, dr, du, dd);
+    let tx = a.x, ty = a.y;
+    if (m === dl) tx = A.x + 22; else if (m === dr) tx = A.x + A.w - 22;
+    else if (m === du) ty = A.y + 22; else ty = A.y + A.h - 22;
+    const dx = tx - a.x, dy = ty - a.y, d = Math.hypot(dx, dy) || 1;
+    a.x += dx / d * 150 * dt; a.y += dy / d * 150 * dt; a.facing = Math.atan2(dy, dx); a.state = POSE.WALK;
+  } else if (g.type === 'bow') {
+    a.vx = a.vy = 0; a.state = POSE.IDLE; a.facing = Math.PI / 2;
+  } else if (g.type === 'spin') {
+    a.state = POSE.DANCE; a.dancePhase += dt * 22; a.vx = a.vy = 0; a.facing += dt * 8;
   }
   clampArena(a);
 }

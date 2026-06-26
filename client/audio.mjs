@@ -32,4 +32,5 @@ export const sfx = {
   tickLow(n) { beep(440 + (10 - n) * 40, 0.05, 'square', 0.04); },
   heart(intensity) { beep(60, 0.12, 'sine', 0.05 * intensity); },
   taunt(i) { beep([523, 659, 784, 880][i % 4], 0.12, 'triangle', 0.05); },
+  tell()   { beep(990, 0.05, 'triangle', 0.035); },   // faint "tell" blip when a body slips nearby
 };

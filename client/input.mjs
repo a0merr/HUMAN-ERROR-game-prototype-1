@@ -28,6 +28,7 @@ export class Input {
     if (k === 'enter' && h.enter) h.enter(e);
     if (k === 'q' && h.decoy) h.decoy();
     if (k === 'p' && h.screenshot) h.screenshot();
+    if (k === 'c' && h.clip) h.clip();
     if ((k === ' ' || k === 'e') && h.react) h.react();
     if (k === ' ' && h.tag) h.tag();
     if (/^[1-4]$/.test(k) && h.taunt) h.taunt(parseInt(k, 10) - 1);

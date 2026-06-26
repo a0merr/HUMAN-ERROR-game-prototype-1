@@ -34,7 +34,8 @@ export function updateHunter(h, dt, ctx) {
     let best = null, bestScore = 16;
     for (const d of decoys) {
       if (inCone(h.x, h.y, h.facing, h.scanHalf, h.scanR, d.x, d.y) && !losBlocked(h.x, h.y, d.x, d.y, pillars)) {
-        if (80 > bestScore) { bestScore = 80; best = d; }
+        const ds = d.strong ? 140 : 80;
+        if (ds > bestScore) { bestScore = ds; best = d; }
       }
     }
     for (const a of agents) {
@@ -46,9 +47,14 @@ export function updateHunter(h, dt, ctx) {
     h.target = best;
   }
 
-  const lockingPlayer = h.target === player && player && seesAgent(h, player, pillars);
-  if (lockingPlayer) {
-    const near = dist(h.x, h.y, player.x, player.y) < 90 ? 1.4 : 1;
+  // The hunter builds a lock on whatever human hider it is tracking — the solo
+  // local player OR (in multiplayer, where there's no single ctx.player) any
+  // human-controlled hider body. Bots are caught on contact, not on lock.
+  const lockTarget = h.target && (h.target === player || (h.target.isPlayer && h.target.role === 'hider'))
+    ? h.target : null;
+  const locking = lockTarget && seesAgent(h, lockTarget, pillars);
+  if (locking) {
+    const near = dist(h.x, h.y, lockTarget.x, lockTarget.y) < 90 ? 1.4 : 1;
     h.lock = clamp(h.lock + dt * ctx.lockSpeed * near, 0, 1);
     h.inspect = 1;
   } else {
@@ -76,8 +82,11 @@ export function updateHunter(h, dt, ctx) {
   if (h.stuckT > 0.7) { h.target = null; const fp = freePoint(pillars, rng, BODY_R + 14); h.px = fp.x; h.py = fp.y; h.stuckT = 0; }
 
   // emit catch events; the rules layer decides consequences
-  if (h.target === player && player && h.lock > 0.55 && dist(h.x, h.y, player.x, player.y) < h.catchR) {
-    ctx.events.push({ type: 'catchPlayer', hunter: h });
+  if (lockTarget && h.lock > 0.55 && dist(h.x, h.y, lockTarget.x, lockTarget.y) < h.catchR) {
+    // solo's local player vs. a multiplayer human hider — distinct events so each
+    // mode's rules layer resolves it correctly (suspicion end vs. body removal).
+    if (lockTarget === player) ctx.events.push({ type: 'catchPlayer', hunter: h });
+    else ctx.events.push({ type: 'catchHider', agent: lockTarget, hunter: h });
   }
   if (h.target && h.target.botHider && h.target.alive !== false && dist(h.x, h.y, h.target.x, h.target.y) < h.catchR) {
     ctx.events.push({ type: 'popBot', agent: h.target, hunter: h });
