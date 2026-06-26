@@ -45,6 +45,8 @@ const probeCanvas = (p) => p.evaluate(() => {
 // ---- SOLO ----
 {
   const p = await page();
+  // skip the first-run teaching round so this asserts the real wave loop
+  await p.addInitScript(() => { try { localStorage.setItem('humanError.taught', '1'); } catch (e) {} });
   await p.goto(BASE + '/solo', { waitUntil: 'load' });
   await p.waitForSelector('#startBtn', { timeout: 10000 });
   await p.click('#startBtn');

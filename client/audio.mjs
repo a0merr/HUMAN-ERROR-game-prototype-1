@@ -2,12 +2,40 @@
 // HUMAN ERROR — tiny WebAudio sfx (no assets, generated on the fly)
 // ============================================================
 
-let actx = null;
+let actx = null, ambient = null;
 
 export function initAudio() {
   if (!actx) { try { actx = new (window.AudioContext || window.webkitAudioContext)(); } catch (e) {} }
   if (actx && actx.state === 'suspended') actx.resume().catch(() => {});
+  startAmbience();
   return actx;
+}
+
+// Low surveillance-room tone — a quiet mains hum + electrical buzz so the silence
+// itself reads "we are watching". Started once on the first audio init.
+export function startAmbience() {
+  if (!actx || ambient) return;
+  try {
+    const hum = actx.createOscillator(); hum.type = 'sine'; hum.frequency.value = 52;
+    const hg = actx.createGain(); hg.gain.value = 0.012; hum.connect(hg); hg.connect(actx.destination); hum.start();
+    const buzz = actx.createOscillator(); buzz.type = 'sawtooth'; buzz.frequency.value = 60;
+    const bf = actx.createBiquadFilter(); bf.type = 'lowpass'; bf.frequency.value = 190;
+    const bg = actx.createGain(); bg.gain.value = 0.005; buzz.connect(bf); bf.connect(bg); bg.connect(actx.destination); buzz.start();
+    ambient = { hum, buzz };
+  } catch (e) {}
+}
+
+// One-shot filtered noise burst (camera clicks, the catch "thud").
+function noiseBurst(dur = 0.2, vol = 0.2, freq = 1200, type = 'bandpass') {
+  if (!actx) return;
+  const n = Math.max(1, Math.floor(actx.sampleRate * dur));
+  const buf = actx.createBuffer(1, n, actx.sampleRate);
+  const d = buf.getChannelData(0);
+  for (let i = 0; i < n; i++) d[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / n, 2);
+  const src = actx.createBufferSource(); src.buffer = buf;
+  const f = actx.createBiquadFilter(); f.type = type; f.frequency.value = freq;
+  const g = actx.createGain(); g.gain.value = vol;
+  src.connect(f); f.connect(g); g.connect(actx.destination); src.start();
 }
 
 export function beep(freq, dur, type = 'sine', vol = 0.06) {
@@ -25,7 +53,9 @@ export function beep(freq, dur, type = 'sine', vol = 0.06) {
 export const sfx = {
   glitch() { beep(170, 0.25, 'sawtooth', 0.08); },
   react()  { beep(680, 0.08, 'triangle', 0.05); },
-  catch()  { beep(220, 0.12, 'sawtooth'); setTimeout(() => beep(140, 0.25, 'sawtooth'), 120); },
+  catch()  { beep(220, 0.12, 'sawtooth'); setTimeout(() => beep(140, 0.25, 'sawtooth'), 120); noiseBurst(0.42, 0.32, 170, 'lowpass'); },
+  scan()   { beep(1400, 0.1, 'sine', 0.045); setTimeout(() => beep(880, 0.18, 'sine', 0.035), 70); },   // sonar: subject acquired
+  shutter() { noiseBurst(0.05, 0.28, 3200, 'highpass'); setTimeout(() => noiseBurst(0.03, 0.16, 2200, 'highpass'), 45); },
   bot()    { beep(160, 0.1, 'square', 0.06); setTimeout(() => beep(110, 0.18, 'sawtooth', 0.05), 90); },
   decoy()  { beep(520, 0.12, 'triangle', 0.06); },
   clear()  { beep(523, 0.1, 'triangle'); setTimeout(() => beep(784, 0.16, 'triangle'), 110); },

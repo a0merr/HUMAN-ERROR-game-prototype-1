@@ -7,8 +7,10 @@
 import { ARENA, BODY_R, BODY_SHAPES, mapById, SKINS, PALETTE } from '../engine/config.mjs';
 import { clamp, lerpAngle } from '../engine/math.mjs';
 import { collidePillars, clampArena } from '../engine/geometry.mjs';
-import { initAudio, beep } from './audio.mjs';
+import { initAudio, beep, sfx as audioSfx } from './audio.mjs';
 import { ClipRecorder } from './clip.mjs';
+import { drawSurveillance } from './style.mjs';
+const camCode = (s) => { s = Math.max(0, s | 0); const m = (s / 60) | 0, r = s % 60; return (m < 10 ? '0' : '') + m + ':' + (r < 10 ? '0' : '') + r; };
 
 const cv = document.getElementById('game');
 const ctx = cv.getContext('2d');
@@ -117,7 +119,7 @@ function handle(m) {
     let cl = false;
     if (m.id === myId) { killcam = { x: m.x, y: m.y, t: 0, dur: 2.0 }; sfx('caughtMe'); cl = clip.capture('busted'); }
     else { sfx('tag'); if (myRole === 'hunter') cl = clip.capture('catch'); }
-    if (cl) feed('🎬 Clip saved');
+    if (cl) { feed('🎬 Clip saved'); audioSfx.shutter(); }
   } else if (m.t === 'over') {
     localStorage.removeItem('he.room');   // match ended — don't auto-rejoin into it
     resultScreen.classList.remove('hidden');
@@ -150,7 +152,7 @@ addEventListener('keydown', e => {
   if (k === ' ' && myRole === 'hunter') tagQueued = true;
   if (myRole !== 'spectator' && k >= '1' && k <= '4') { send({ t: 'emote', e: parseInt(k, 10) - 1 }); sfx('taunt'); }
   if (k === 'p') screenshot();
-  if (k === 'c') { if (clip.capture('clip')) feed('🎬 Clip saved'); }
+  if (k === 'c') { if (clip.capture('clip')) { feed('🎬 Clip saved'); audioSfx.shutter(); } }
 });
 addEventListener('keyup', e => { keys[e.key.toLowerCase()] = false; });
 function screenshot() {
@@ -316,6 +318,13 @@ function frame(ts) {
     if (killcam.t >= killcam.dur) killcam = null;
   }
   if (myRole === 'hunter' && myStun) { ctx.save(); ctx.textAlign = 'center'; ctx.fillStyle = 'rgba(255,46,99,.85)'; ctx.font = '800 18px Segoe UI'; ctx.fillText('STUNNED — wrong target', W / 2, H - 90); ctx.restore(); }
+
+  // surveillance post-FX — same signature look across solo + mp (and every clip)
+  const danger = Math.max(flash, killcam ? 0.8 : (myRole === 'hunter' && myStun ? 0.5 : 0));
+  drawSurveillance(ctx, W, H, {
+    time: t, cam: 'CAM-' + String(curMapId || 'feed').slice(0, 3).toUpperCase(),
+    code: camCode(snapCur ? snapCur.timer : 0), flash, danger,
+  });
 
   shake *= 0.86;
   if (particles.length) { for (const p of particles) { p.x += p.vx / 60; p.y += p.vy / 60; p.vx *= 0.92; p.vy *= 0.92; p.life -= 1 / 60; } particles = particles.filter(p => p.life > 0); }

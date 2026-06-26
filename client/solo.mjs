@@ -35,6 +35,8 @@ let best = parseInt(localStorage.getItem('humanError.best') || '0', 10) || 0;
 let combo = 0, comboT = 0, maxCombo = 0;
 let adrenT = 0, slipGrace = 0, wasSeen = false;
 let tellCD = 0, prevSlipNear = 0;
+let fxFlash = 0, fxDanger = 0;   // surveillance post-FX: chroma punch + edge-tint heat
+const camCode = (s) => { s = Math.max(0, s | 0); const m = (s / 60) | 0, r = s % 60; return (m < 10 ? '0' : '') + m + ':' + (r < 10 ? '0' : '') + r; };
 
 // lifetime meta-progression (persisted across runs)
 const META_DEFAULTS = { runs: 0, waves: 0, bots: 0, glitchHits: 0, lifeScore: 0, bestWave: 0, bestScore: 0 };
@@ -99,8 +101,96 @@ function choosePerk(id) {
   perks.add(id); hud.hidePerks(); wave++; beginWave();
 }
 
+// ---- onboarding / teaching round (the 30-second "I get it" moment) ----
+let tutorial = null;
+const TUT_STEPS = [
+  { title: '● REC · CAM-00 · BEHAVIORAL SCAN',
+    text: 'That ringed body is <b>YOU</b> — the only real human on this feed. Move with <b>WASD / Arrows</b>.',
+    done: (t) => t.moved > 140 },
+  { title: 'BLEND PROTOCOL',
+    text: 'Hold <b>SHIFT</b> to walk slow like the NPCs. Moving like them is how you disappear.',
+    done: (t) => t.shiftT > 1.2 },
+  { title: 'THE TELL',
+    text: 'A fake human just glitched — see the <b>💨</b>? They act <b>too human</b>. That’s exactly what gets flagged.',
+    enter: forceTutorialSlip, done: (t) => t.stepT > 4 },
+  { title: 'THE HUNTER',
+    text: 'It scans the crowd and locks whoever looks <b>most human</b>. Don’t be that body — blend until it gives up.',
+    enter: addTutorialHunter, done: (t) => t.stepT > 6 },
+  { title: 'CLEARED FOR DUTY',
+    text: 'You’ve got it. Dropping you into the real shift…',
+    done: (t) => t.stepT > 1.8 },
+];
+
+function startTutorial() {
+  const map = MAPS[0];
+  sim = new CrowdSim({ seed: (Date.now() >>> 0) || 1, mapId: map.id, npcCount: WAVE.npcCount, botCount: WAVE.botCount });
+  sim.lockSpeed = 0.5;   // gentle: the training Hunter is slow to commit
+  sim.buildCrowd();
+  player = sim.addHuman({ role: 'hider', x: ARENA.x + ARENA.w / 2, y: ARENA.y + ARENA.h - 55 });
+  sim.player = player; sim.hunters = [];
+  running = false; betweenWaves = false; killcam = null; pendingEnd = null;
+  wave = 0; totalTime = 0; score = 0; perks = new Set();
+  suspicion = 0; shake = 0; fxFlash = 0; fxDanger = 0; combo = 0; hud.setCombo(0);
+  tutorial = { step: 0, t: 0, stepT: 0, moved: 0, shiftT: 0, px: player.x, py: player.y };
+  hud.setWave('TRAINING'); hud.setTimerLabel('CAM-00'); hud.setTimer('—'); hud.setSuspicion(0); hud.hideGlitch();
+  enterTutStep();
+}
+function enterTutStep() {
+  const s = TUT_STEPS[tutorial.step];
+  hud.showCoach(s.title, s.text);
+  if (s.enter) s.enter();
+}
+function advanceTut() {
+  tutorial.step++; tutorial.stepT = 0;
+  if (tutorial.step >= TUT_STEPS.length) { finishTutorial(); return; }
+  enterTutStep();
+}
+function finishTutorial() {
+  tutorial = null; hud.hideCoach();
+  try { localStorage.setItem('humanError.taught', '1'); } catch (e) {}
+  startGame();
+}
+function forceTutorialSlip() {
+  let best = null, bd = 1e9;
+  for (const a of sim.agents) {
+    if (!a.botHider) continue;
+    const d = (a.x - player.x) ** 2 + (a.y - player.y) ** 2;
+    if (d < bd) { bd = d; best = a; }
+  }
+  if (best) { best.slipping = true; best.slip = 'sprint'; best.slipDur = 3.4; best.slipT = 99; sfx.tell(); }
+}
+function addTutorialHunter() {
+  sim.hunters = [makeHunter(0, 1, sim.rng, 1)]; sfx.scan();
+}
+
+function stepTutorial(dt, ts) {
+  const tut = tutorial; tut.t += dt; tut.stepT += dt;
+  sim.events.length = 0;
+  sim.applyHumanIntent(player, dt, input.intent({}));
+  sim.stepCrowd(dt);
+  for (const h of sim.hunters) updateHunter(h, dt, sim);
+  for (const e of sim.events) {
+    if (e.type === 'popBot') { particles.burst(e.agent.x, e.agent.y, PALETTE.pink, 18); sim.removeAgent(e.agent); sfx.bot(); }
+    // catchPlayer / catchHider ignored — training is consequence-free
+  }
+  const dx = player.x - tut.px, dy = player.y - tut.py;
+  tut.moved += Math.hypot(dx, dy); tut.px = player.x; tut.py = player.y;
+  if (input.keys['shift']) tut.shiftT += dt;
+  let danger = 0;
+  for (const h of sim.hunters) if (seesAgent(h, player, sim.pillars)) danger = Math.max(danger, h.lock);
+  fxDanger = danger;
+  if (TUT_STEPS[tut.step].done(tut)) advanceTut();
+  particles.step(dt); shake *= 0.86; fxFlash = Math.max(0, fxFlash - dt * 1.6);
+  renderer.render(sim, {
+    player, perks: new Set(), killcam: null, shake, particles: particles.list,
+    labelPlayer: true, maxLock: maxPlayerLock(sim.hunters, player),
+    surveil: { time: ts / 1000, cam: 'CAM-00', code: camCode(tut.t), flash: fxFlash, danger: fxDanger },
+  });
+}
+
 // ---- input actions ----
 input.on('enter', () => {
+  if (tutorial) { finishTutorial(); return; }   // skip training
   if (!hud.startScreen.classList.contains('hidden')) start();
   else if (!hud.endScreen.classList.contains('hidden')) start();
 });
@@ -114,7 +204,7 @@ input.on('decoy', tryAbility);
 input.on('screenshot', () => {
   try { const a = document.createElement('a'); a.download = 'human-error-' + Date.now() + '.png'; a.href = cv.toDataURL('image/png'); a.click(); } catch (e) {}
 });
-input.on('clip', () => { if (clip.capture('clip')) hud.feed('🎬 Clip saved'); });
+input.on('clip', () => { if (clip.capture('clip')) { hud.feed('🎬 Clip saved'); sfx.shutter(); } });
 
 // Q-slot ability — decoy drop or blink dash, whichever perk is held.
 function tryAbility() {
@@ -143,7 +233,7 @@ function updateSuspicion(dt) {
   const ghosting = hasPerk('ghost') && slow;
   let seen = !ghosting && anyHunterSeesPlayer();
   // slippery: short grace the moment a Hunter first picks you up
-  if (seen && !wasSeen && hasPerk('slip')) slipGrace = 0.6;
+  if (seen && !wasSeen) { sfx.scan(); if (hasPerk('slip')) slipGrace = 0.6; }   // sonar ping the moment you're acquired
   wasSeen = seen;
   if (slipGrace > 0) { slipGrace = Math.max(0, slipGrace - dt); if (seen) seen = false; }
 
@@ -196,7 +286,7 @@ function endGame(reason) {
   hud.setVignette(0);
   pendingEnd = { reason };
   killcam = { x: player.x, y: player.y, t: 0, dur: 2.4, label: 'CAUGHT — too human.' };
-  particles.burst(player.x, player.y, PALETTE.pink, 40); shake = 18;
+  particles.burst(player.x, player.y, PALETTE.pink, 40); shake = 18; fxFlash = 1;
   sfx.catch();
   if (clip.capture('busted')) hud.feed('🎬 Highlight clip saved');   // auto-clip the bust
 }
@@ -243,6 +333,8 @@ function frame(ts) {
 function tick(ts) {
   const dt = Math.min(0.05, (ts - last) / 1000 || 0); last = ts;
 
+  if (tutorial) { stepTutorial(dt, ts); return; }
+
   if (running) {
     waveTime -= dt; totalTime += dt;
     if (decoyCD > 0) decoyCD = Math.max(0, decoyCD - dt);
@@ -280,7 +372,7 @@ function tick(ts) {
 
       hud.setSuspicion(suspicion);
       const heat = Math.max(suspicion / 100 * 0.6, maxPlayerLock(sim.hunters, player));
-      hud.setVignette(heat * 0.9);
+      hud.setVignette(heat * 0.9); fxDanger = heat;
       if (heat > 0.4) { heartT -= dt; if (heartT <= 0) { heartT = clamp(0.7 - heat * 0.4, 0.18, 0.7); sfx.heart(heat); } }
     }
   }
@@ -288,9 +380,15 @@ function tick(ts) {
   if (killcam) { killcam.t += dt * 0.45; if (killcam.t >= killcam.dur) showEndScreen(); }
   particles.step(dt);
   shake *= 0.86;
+  fxFlash = Math.max(0, fxFlash - dt * 1.6);
+  if (!running) fxDanger = Math.max(0, fxDanger - dt);
   hud.stepFeed(dt);
 
-  if (sim) renderer.render(sim, { player, perks, killcam, shake, particles: particles.list, labelPlayer: true, maxLock: maxPlayerLock(sim.hunters, player) });
+  if (sim) renderer.render(sim, {
+    player, perks, killcam, shake, particles: particles.list, labelPlayer: true,
+    maxLock: maxPlayerLock(sim.hunters, player),
+    surveil: { time: ts / 1000, cam: 'CAM-0' + Math.min(wave, 9), code: camCode(totalTime), flash: fxFlash, danger: fxDanger },
+  });
 }
 
 // ---- boot ----
@@ -298,7 +396,10 @@ function start() {
   initAudio();
   clip.start();
   hud.hideOverlays();
-  startGame();
+  // first-ever run gets the 30-second teaching round; afterwards drop straight in
+  let taught = false;
+  try { taught = !!localStorage.getItem('humanError.taught'); } catch (e) {}
+  if (taught) startGame(); else startTutorial();
 }
 document.getElementById('startBtn').addEventListener('click', start);
 document.getElementById('againBtn').addEventListener('click', start);
