@@ -1,0 +1,14 @@
+# Render.com blueprint — one-click deploy.
+# Render supports WebSockets on web services out of the box.
+services:
+  - type: web
+    name: human-error
+    runtime: node
+    plan: free
+    buildCommand: ""           # zero dependencies, nothing to build
+    startCommand: node server.mjs
+    healthCheckPath: /healthz
+    autoDeploy: true
+    envVars:
+      - key: NODE_VERSION
+        value: "20"

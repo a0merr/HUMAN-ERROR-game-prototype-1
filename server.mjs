@@ -29,6 +29,11 @@ const POSE_WIRE = { idle: 0, walk: 1, dance: 2 };
 const MIME = { '.html': 'text/html', '.js': 'text/javascript', '.mjs': 'text/javascript', '.css': 'text/css', '.json': 'application/json', '.ico': 'image/x-icon' };
 const server = http.createServer((req, res) => {
   let url = req.url.split('?')[0];
+  // health check for hosting platforms (Render/Railway/Fly/etc.)
+  if (url === '/healthz') {
+    res.writeHead(200, { 'Content-Type': 'text/plain' });
+    return res.end('ok rooms=' + rooms.size);
+  }
   if (url === '/') url = '/mp.html';
   else if (url === '/solo') url = '/index.html';
   const file = path.join(ROOT, path.normalize(url).replace(/^([/\\])+/, ''));
@@ -376,3 +381,15 @@ server.listen(PORT, '0.0.0.0', () => {
   console.log("  Internet friends:  run  'npm run tunnel'  in another terminal (gives a public link).");
   console.log('\n  Open the URL, Create a room, share the code, press Start.\n');
 });
+
+// graceful shutdown so hosting platforms (which send SIGTERM on deploy/restart)
+// don't leave sockets hanging
+let shuttingDown = false;
+function shutdown(signal) {
+  if (shuttingDown) return; shuttingDown = true;
+  console.log('\n  ' + signal + ' received — shutting down…');
+  server.close(() => process.exit(0));
+  setTimeout(() => process.exit(0), 3000).unref();   // hard stop if sockets linger
+}
+process.on('SIGTERM', () => shutdown('SIGTERM'));
+process.on('SIGINT', () => shutdown('SIGINT'));
