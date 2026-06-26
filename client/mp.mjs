@@ -205,10 +205,11 @@ function drawPerson(b, t) {
     const ico = { s: '💨', f: '😱', o: '🤪', b: '👀' }[b.sl] || '⚠️';
     const pulse = 0.5 + 0.5 * Math.sin((t * 16) + b.id);
     ctx.save();
-    ctx.globalAlpha = 0.5 + 0.45 * pulse; ctx.strokeStyle = '#ff2e63'; ctx.lineWidth = 2.4;
-    ctx.beginPath(); ctx.arc(0, -1, 15 + pulse * 4, 0, Math.PI * 2); ctx.stroke();
-    ctx.globalAlpha = 1; ctx.font = '15px "Segoe UI Emoji", Segoe UI'; ctx.textAlign = 'center';
-    ctx.fillText(ico, 0, -27 + bob);
+    ctx.shadowColor = '#ff2e63'; ctx.shadowBlur = 12 + pulse * 6;   // glow survives downscaling into clips/thumbnails
+    ctx.globalAlpha = 0.55 + 0.4 * pulse; ctx.strokeStyle = '#ff2e63'; ctx.lineWidth = 3;
+    ctx.beginPath(); ctx.arc(0, -1, 16 + pulse * 5, 0, Math.PI * 2); ctx.stroke();
+    ctx.globalAlpha = 1; ctx.shadowBlur = 6; ctx.font = '16px "Segoe UI Emoji", Segoe UI'; ctx.textAlign = 'center';
+    ctx.fillText(ico, 0, -28 + bob);
     ctx.restore();
   }
   ctx.restore();

@@ -65,10 +65,11 @@ export class Renderer {
       const ico = { sprint: '💨', flinch: '😱', overdance: '🤪', bunch: '👀' }[a.slip] || '⚠️';
       const pulse = 0.5 + 0.5 * Math.sin(a.animPhase * 16);
       ctx.save();
-      ctx.globalAlpha = 0.5 + 0.45 * pulse; ctx.strokeStyle = PALETTE.pink; ctx.lineWidth = 2.4;
-      ctx.beginPath(); ctx.arc(0, -1, 15 + pulse * 4, 0, Math.PI * 2); ctx.stroke();
-      ctx.globalAlpha = 1; ctx.font = '15px "Segoe UI Emoji", Segoe UI'; ctx.textAlign = 'center';
-      ctx.fillText(ico, 0, -27 + bob);
+      ctx.shadowColor = PALETTE.pink; ctx.shadowBlur = 12 + pulse * 6;   // glow survives downscaling into clips/thumbnails
+      ctx.globalAlpha = 0.55 + 0.4 * pulse; ctx.strokeStyle = PALETTE.pink; ctx.lineWidth = 3;
+      ctx.beginPath(); ctx.arc(0, -1, 16 + pulse * 5, 0, Math.PI * 2); ctx.stroke();
+      ctx.globalAlpha = 1; ctx.shadowBlur = 6; ctx.font = '16px "Segoe UI Emoji", Segoe UI'; ctx.textAlign = 'center';
+      ctx.fillText(ico, 0, -28 + bob);
       ctx.restore();
     }
     // taunt emote bubble (multiplayer flavor / clip surface)
