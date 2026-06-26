@@ -6,7 +6,7 @@
 // top of this one class, so the crowd behaves identically everywhere.
 // ============================================================
 
-import { ARENA, BODY_R, GLITCHES, WAVE, KIND, mapById } from './config.mjs';
+import { ARENA, BODY_R, BODY_SHAPES, GLITCHES, WAVE, KIND, mapById, skinIndex } from './config.mjs';
 import { makeRNG, clamp } from './math.mjs';
 import { collidePillars, clampArena, placeFree } from './geometry.mjs';
 import { makeAgent, updateNPC, updateBot, runReaction, resetIds } from './agents.mjs';
@@ -40,13 +40,16 @@ export class CrowdSim {
   buildCrowd() {
     resetIds();
     this.agents = [];
-    const skinIdx = ['slate', 'sand', 'moss', 'rose', 'steel'].indexOf(this.skin);
+    const skinIdx = skinIndex(this.skin);
+    const nShapes = BODY_SHAPES.length;
     for (let i = 0; i < this.npcCount; i++) {
-      const a = makeAgent(this.rng, KIND.NPC); a.skin = Math.max(0, skinIdx);
+      const a = makeAgent(this.rng, KIND.NPC);
+      a.skin = skinIdx; a.shape = this.rng.int(0, nShapes - 1);
       placeFree(a, this.pillars, this.rng); this.agents.push(a);
     }
     for (let i = 0; i < this.botCount; i++) {
-      const a = makeAgent(this.rng, KIND.BOT); a.botHider = true; a.skin = Math.max(0, skinIdx);
+      const a = makeAgent(this.rng, KIND.BOT); a.botHider = true;
+      a.skin = skinIdx; a.shape = this.rng.int(0, nShapes - 1);
       placeFree(a, this.pillars, this.rng); this.agents.push(a);
     }
   }
@@ -54,6 +57,7 @@ export class CrowdSim {
   addHuman({ role = 'hider', x, y } = {}) {
     const a = makeAgent(this.rng, KIND.HUMAN);
     a.isPlayer = true; a.role = role;
+    a.shape = this.rng.int(0, BODY_SHAPES.length - 1);
     if (x !== undefined) a.x = x;
     if (y !== undefined) a.y = y;
     placeFree(a, this.pillars, this.rng);
@@ -136,7 +140,7 @@ export class CrowdSim {
   snapshot() {
     return {
       t: this.time, mapId: this.map.id, glitch: this.glitch ? this.glitch.type : null,
-      agents: this.agents.map(a => [a.id, Math.round(a.x), Math.round(a.y), a.facing.toFixed(2), a.pose[0], a.kind[0], a.role || '']),
+      agents: this.agents.map(a => [a.id, Math.round(a.x), Math.round(a.y), a.facing.toFixed(2), a.pose[0], a.kind[0], a.role || '', a.shape || 0]),
     };
   }
 }

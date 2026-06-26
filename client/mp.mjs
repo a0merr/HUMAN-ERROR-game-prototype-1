@@ -4,14 +4,16 @@
 // engine's map layouts, skins and palette so visuals match the server sim.
 // ============================================================
 
-import { ARENA, BODY_R, mapById, SKINS, PALETTE } from '../engine/config.mjs';
+import { ARENA, BODY_R, BODY_SHAPES, mapById, SKINS, PALETTE } from '../engine/config.mjs';
 import { clamp, lerpAngle } from '../engine/math.mjs';
 import { collidePillars, clampArena } from '../engine/geometry.mjs';
 import { initAudio, beep } from './audio.mjs';
+import { ClipRecorder } from './clip.mjs';
 
 const cv = document.getElementById('game');
 const ctx = cv.getContext('2d');
 const W = cv.width, H = cv.height;
+const clip = new ClipRecorder(cv, { gameName: 'human-error' });
 
 const POSE = { IDLE: 0, WALK: 1, DANCE: 2 };
 // must match server.mjs movement tunables for prediction to track
@@ -93,6 +95,7 @@ function handle(m) {
     if (m.state !== 'playing') { joinScreen.classList.add('hidden'); lobbyScreen.classList.remove('hidden'); }
   } else if (m.t === 'start') {
     crowdSkin = m.skin || 0; curMapId = m.mapId || 'plaza';
+    clip.start();
     lobbyScreen.classList.add('hidden'); resultScreen.classList.add('hidden');
     feedItems = []; renderFeed(); snapPrev = snapCur = null; killcam = null; flash = 0; shake = 0; particles = [];
     myStun = prevStun = 0; hidersLeft = -1; pred = null; predTs = 0;
@@ -111,7 +114,10 @@ function handle(m) {
   else if (m.t === 'event') { feed(m.msg); }
   else if (m.t === 'caught') {
     flash = 0.6; shake = Math.max(shake, 9); burst(m.x, m.y, '#ff2e63', 24);
-    if (m.id === myId) { killcam = { x: m.x, y: m.y, t: 0, dur: 2.0 }; sfx('caughtMe'); } else sfx('tag');
+    let cl = false;
+    if (m.id === myId) { killcam = { x: m.x, y: m.y, t: 0, dur: 2.0 }; sfx('caughtMe'); cl = clip.capture('busted'); }
+    else { sfx('tag'); if (myRole === 'hunter') cl = clip.capture('catch'); }
+    if (cl) feed('🎬 Clip saved');
   } else if (m.t === 'over') {
     localStorage.removeItem('he.room');   // match ended — don't auto-rejoin into it
     resultScreen.classList.remove('hidden');
@@ -144,6 +150,7 @@ addEventListener('keydown', e => {
   if (k === ' ' && myRole === 'hunter') tagQueued = true;
   if (myRole !== 'spectator' && k >= '1' && k <= '4') { send({ t: 'emote', e: parseInt(k, 10) - 1 }); sfx('taunt'); }
   if (k === 'p') screenshot();
+  if (k === 'c') { if (clip.capture('clip')) feed('🎬 Clip saved'); }
 });
 addEventListener('keyup', e => { keys[e.key.toLowerCase()] = false; });
 function screenshot() {
@@ -172,8 +179,10 @@ function drawPerson(b, t) {
   const dancing = b.p === POSE.DANCE;
   const sk = SKINS[crowdSkin] || SKINS[0];
   const bodyCol = isHunter ? '#ff2e63' : sk.body, headCol = isHunter ? '#cfe6ff' : sk.head;
+  const bs = BODY_SHAPES[b.sh || 0] || BODY_SHAPES[0];
   ctx.save(); ctx.translate(b.x, b.y);
-  ctx.fillStyle = 'rgba(0,0,0,.28)'; ctx.beginPath(); ctx.ellipse(0, 11, 9, 3.2, 0, 0, Math.PI * 2); ctx.fill();
+  ctx.fillStyle = 'rgba(0,0,0,.28)'; ctx.beginPath(); ctx.ellipse(0, 11, 9 * bs.sx, 3.2, 0, 0, Math.PI * 2); ctx.fill();
+  if (!isHunter) ctx.scale(bs.bw / 10, bs.bh / 12);
   const swing = moving ? Math.sin(t * 11 + b.id) * 4 : 0;
   ctx.strokeStyle = sk.dark; ctx.lineWidth = 3.2; ctx.lineCap = 'round';
   ctx.beginPath(); ctx.moveTo(-2.5, 4); ctx.lineTo(-2.5 + swing * 0.4, 11); ctx.stroke();
@@ -188,6 +197,17 @@ function drawPerson(b, t) {
   if (b.e !== undefined && b.e !== null && EMOJI[b.e]) {
     ctx.font = '16px Segoe UI Emoji, Segoe UI'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
     ctx.fillText(EMOJI[b.e], 0, -24 + bob); ctx.textBaseline = 'alphabetic';
+  }
+  // TELL marker — a bot mid-slip (sent as b.sl: s/f/o/b) gets a pulsing callout
+  if (b.sl) {
+    const ico = { s: '💨', f: '😱', o: '🤪', b: '👀' }[b.sl] || '⚠️';
+    const pulse = 0.5 + 0.5 * Math.sin((t * 16) + b.id);
+    ctx.save();
+    ctx.globalAlpha = 0.5 + 0.45 * pulse; ctx.strokeStyle = '#ff2e63'; ctx.lineWidth = 2.4;
+    ctx.beginPath(); ctx.arc(0, -1, 15 + pulse * 4, 0, Math.PI * 2); ctx.stroke();
+    ctx.globalAlpha = 1; ctx.font = '15px "Segoe UI Emoji", Segoe UI'; ctx.textAlign = 'center';
+    ctx.fillText(ico, 0, -27 + bob);
+    ctx.restore();
   }
   ctx.restore();
 }
