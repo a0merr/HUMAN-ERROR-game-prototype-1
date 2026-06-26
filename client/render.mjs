@@ -5,6 +5,7 @@
 
 import { ARENA, BODY_R, BODY_SHAPES, POSE, PALETTE, SKINS, W, H } from '../engine/config.mjs';
 import { clamp } from '../engine/math.mjs';
+import { drawSurveillance } from './style.mjs';
 
 export class Renderer {
   constructor(canvas) {
@@ -175,6 +176,9 @@ export class Renderer {
       ctx.arc(kc.x, kc.y, BODY_R + 6, 0, Math.PI * 2); ctx.stroke();
     }
     ctx.restore();
+
+    // surveillance post-FX (screen space — stamps the gameplay AND the clips)
+    if (view.surveil) drawSurveillance(ctx, W, H, view.surveil);
 
     if (kc && kc.t > 0.45) {
       const a = clamp((kc.t - 0.45) / 0.3, 0, 1);

@@ -28,8 +28,19 @@ export class Hud {
     this.endStats = $('endStats');
     this.combo = $('combo');
     this.metaLine = $('metaLine');
+    this.coach = $('coach');
+    this.coachTitle = $('coachTitle');
+    this.coachText = $('coachText');
     this.feedItems = [];
   }
+
+  showCoach(title, text) {
+    if (!this.coach) return;
+    if (this.coachTitle) this.coachTitle.textContent = title || '';
+    if (this.coachText) this.coachText.innerHTML = text || '';
+    this.coach.classList.add('show');
+  }
+  hideCoach() { if (this.coach) this.coach.classList.remove('show'); }
 
   setCombo(n) {
     if (!this.combo) return;
