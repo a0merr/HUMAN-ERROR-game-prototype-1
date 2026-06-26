@@ -41,6 +41,7 @@ let killcam = null, flash = 0, shake = 0, particles = [];
 // client-side prediction of the local body (instant input response; the server
 // remains authoritative — predicted pos is gently corrected toward each snapshot)
 let pred = null, predPose = POSE.IDLE, predTs = 0;
+let lastStore = 0;   // throttle localStorage activity stamps
 
 // ---------- audio ----------
 function sfx(name) {
@@ -58,8 +59,17 @@ function burst(x, y, color, n = 18) {
   for (let i = 0; i < n; i++) { const a = Math.random() * 6.28, s = 40 + Math.random() * 200; particles.push({ x, y, vx: Math.cos(a) * s, vy: Math.sin(a) * s, life: 0.4 + Math.random() * 0.5, color }); }
 }
 
+// ---------- identity / reconnect ----------
+function token() {
+  let t = localStorage.getItem('he.token');
+  if (!t) { t = (crypto.randomUUID ? crypto.randomUUID() : Math.random().toString(36).slice(2) + Date.now().toString(36)); localStorage.setItem('he.token', t); }
+  return t;
+}
+
 // ---------- websocket ----------
 function connect(action) {
+  action.token = token();
+  if (action.name) localStorage.setItem('he.name', action.name);
   if (ws && ws.readyState === 1) { send(action); return; }
   const proto = location.protocol === 'https:' ? 'wss' : 'ws';
   ws = new WebSocket(proto + '://' + location.host);
@@ -73,7 +83,10 @@ function send(obj) { if (ws && ws.readyState === 1) ws.send(JSON.stringify(obj))
 
 function handle(m) {
   if (m.t === 'error') { $('connStatus').textContent = m.msg; }
-  else if (m.t === 'joined') { myId = m.id; myName = m.you; }
+  else if (m.t === 'joined') {
+    myId = m.id; myName = m.you;
+    localStorage.setItem('he.room', m.room); localStorage.setItem('he.ts', String(Date.now()));
+  }
   else if (m.t === 'lobby') {
     $('lobbyCode').textContent = m.code;
     $('playerList').innerHTML = m.players.map(p => `<div class="pl"><span>${esc(p.name)}</span><span class="hint">${p.name === myName ? 'you' : ''}</span></div>`).join('');
@@ -85,6 +98,7 @@ function handle(m) {
     myStun = prevStun = 0; hidersLeft = -1; pred = null; predTs = 0;
     feed('Map: ' + mapById(curMapId).name + ' · Skin: ' + (SKINS[crowdSkin] ? SKINS[crowdSkin].id : '—')); sfx('start');
   } else if (m.t === 'snap') {
+    const now = Date.now(); if (now - lastStore > 2000) { lastStore = now; localStorage.setItem('he.ts', String(now)); }
     snapPrev = snapCur; snapCur = m; snapTime = performance.now();
     elTimer.textContent = m.timer;
     hidersLeft = (m.hidersLeft === undefined) ? -1 : m.hidersLeft;
@@ -99,6 +113,7 @@ function handle(m) {
     flash = 0.6; shake = Math.max(shake, 9); burst(m.x, m.y, '#ff2e63', 24);
     if (m.id === myId) { killcam = { x: m.x, y: m.y, t: 0, dur: 2.0 }; sfx('caughtMe'); } else sfx('tag');
   } else if (m.t === 'over') {
+    localStorage.removeItem('he.room');   // match ended — don't auto-rejoin into it
     resultScreen.classList.remove('hidden');
     const iWon = (myRole === 'hider' && m.winner === 'hiders') || (myRole === 'hunter' && m.winner === 'hunter');
     sfx(iWon ? 'win' : 'lose');
@@ -303,3 +318,20 @@ $('joinBtn').addEventListener('click', () => {
 $('roomInput').addEventListener('keydown', e => { if (e.key === 'Enter') $('joinBtn').click(); });
 $('startBtn').addEventListener('click', () => send({ t: 'start' }));
 $('againBtn').addEventListener('click', () => { send({ t: 'again' }); resultScreen.classList.add('hidden'); lobbyScreen.classList.remove('hidden'); });
+
+// ---------- auto-reconnect on reload ----------
+// If we were recently in a room (same browser, persistent token), rejoin it.
+// The server resumes our body + role if the match is still inside the grace window.
+(function autoRejoin() {
+  try {
+    const room = localStorage.getItem('he.room');
+    const ts = +localStorage.getItem('he.ts') || 0;
+    if (room && Date.now() - ts < 60000) {
+      const nm = localStorage.getItem('he.name') || 'Player';
+      $('nameInput').value = nm;
+      $('connStatus').textContent = 'Reconnecting to ' + room + '…';
+      initAudio();
+      connect({ t: 'join', name: nm, room });
+    }
+  } catch (e) {}
+})();

@@ -79,7 +79,7 @@ npm run tunnel         # public internet link (second terminal, no account)
 ### Honest gaps before it's a $6.99 product
 - Lots of **playtesting** to confirm the joke lands with friends (the whole point of this stage).
 - Game **feel** polish, real **art/audio**, more maps and events.
-- **Hosted deployment** (currently LAN/tunnel), reconnect handling, anti-cheat.
+- **Hosted deployment** (currently LAN/tunnel) and anti-cheat. (Reconnect within a grace window + client-side prediction are in.)
 - **Mobile/touch**, account/unlocks/progression, Steam integration.
 
 This is a risk/reward map, not a finished game: capped downside (time), and the loop is proven to *work*. Next: playtest, polish the feel, then build toward the vertical slice.

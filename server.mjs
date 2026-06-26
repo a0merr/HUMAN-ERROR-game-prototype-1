@@ -101,6 +101,7 @@ server.on('upgrade', (req, sock) => {
 // MATCH RULES (multiplayer-specific; crowd sim is shared)
 // ============================================================
 const MATCH_SECS = 90, TAG_RANGE = 34, TAG_CONE = 1.1, MISS_STUN = 1.4;
+const RECONNECT_GRACE = 20000;   // ms a dropped player's body is held for reconnect
 const HIDER_SPEED = 140, HUNTER_SPEED = 132, NPC_SPEED = 58;
 const MP_NPCS = 30, MP_BOTS = 6;
 
@@ -125,7 +126,10 @@ function genCode() {
 
 function createRoom() {
   const code = genCode();
-  const r = { code, state: 'lobby', players: new Map(), sim: null, timer: MATCH_SECS, mapId: 'plaza' };
+  const r = {
+    code, state: 'lobby', players: new Map(), byToken: new Map(),
+    sim: null, timer: MATCH_SECS, mapId: 'plaza',
+  };
   rooms.set(code, r);
   return r;
 }
@@ -256,31 +260,51 @@ function tick(room, dt) {
 
 // ---------- connection handlers ----------
 function onConnect(sock) { sock._player = null; }
-function joinRoom(sock, room, name) {
+function joinRoom(sock, room, name, token) {
+  // reconnect: same token + a body still held within the grace window
+  if (token && room.byToken.has(token)) {
+    const existing = room.byToken.get(token);
+    if (existing.graceTimer) { clearTimeout(existing.graceTimer); existing.graceTimer = null; }
+    room.players.delete(existing.sock);          // drop the dead socket key
+    existing.sock = sock; existing.disconnected = false; sock._player = existing;
+    room.players.set(sock, existing);
+    wsSend(sock, JSON.stringify({ t: 'joined', id: existing.id, room: room.code, you: existing.name }));
+    if (room.state === 'playing' && existing.agent) {
+      // resume the match view; snapshots resume control of the same body/role
+      wsSend(sock, JSON.stringify({ t: 'start', skin: room.skin, mapId: room.mapId, resumed: true }));
+    } else {
+      sendLobby(room);
+    }
+    return;
+  }
+
   const player = {
     id: nextId++, name: (name || 'Player').slice(0, 14), room, role: 'spectator',
-    agent: null, score: 0, stunT: 0,
+    agent: null, score: 0, stunT: 0, token: token || null, disconnected: false, graceTimer: null,
     input: { up: 0, down: 0, left: 0, right: 0, shift: 0, dance: 0 }, tagEdge: false, sock,
   };
   sock._player = player; room.players.set(sock, player);
+  if (token) room.byToken.set(token, player);
   wsSend(sock, JSON.stringify({ t: 'joined', id: player.id, room: room.code, you: player.name }));
   sendLobby(room);
 }
 function onMessage(sock, msg) {
-  if (msg.t === 'create') { if (sock._player) return; joinRoom(sock, createRoom(), msg.name); }
+  if (msg.t === 'create') { if (sock._player) return; joinRoom(sock, createRoom(), msg.name, msg.token); }
   else if (msg.t === 'quick') {
     if (sock._player) return;
     let room = null;
     for (const r of rooms.values()) if (r.public && r.state === 'lobby' && r.players.size < MAX_PLAYERS) { room = r; break; }
     if (!room) { room = createRoom(); room.public = true; }
-    joinRoom(sock, room, msg.name);
+    joinRoom(sock, room, msg.name, msg.token);
   } else if (msg.t === 'join') {
     if (sock._player) return;
     const code = String(msg.room || '').toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 8);
     const room = rooms.get(code);
     if (!room) { wsSend(sock, JSON.stringify({ t: 'error', msg: "No room '" + (code || '—') + "'. Check the code." })); return; }
-    if (room.players.size >= MAX_PLAYERS) { wsSend(sock, JSON.stringify({ t: 'error', msg: 'Room ' + code + ' is full.' })); return; }
-    joinRoom(sock, room, msg.name);
+    // a reconnecting player rebinds even on a full room; a new player must fit the cap
+    const reconnecting = msg.token && room.byToken.has(msg.token);
+    if (!reconnecting && room.players.size >= MAX_PLAYERS) { wsSend(sock, JSON.stringify({ t: 'error', msg: 'Room ' + code + ' is full.' })); return; }
+    joinRoom(sock, room, msg.name, msg.token);
   } else if (!sock._player) return;
   else if (msg.t === 'start') { const room = sock._player.room; if (room.state !== 'playing') startMatch(room); }
   else if (msg.t === 'input') { const p = sock._player; p.input = msg.k || p.input; if (msg.tag) p.tagEdge = true; }
@@ -295,19 +319,35 @@ function onMessage(sock, msg) {
   }
 }
 function sendLobby(room) {
-  const players = [...room.players.values()].map(p => ({ name: p.name }));
+  const players = [...room.players.values()].map(p => ({ name: p.name, off: !!p.disconnected }));
   broadcast(room, { t: 'lobby', players, code: room.code, canStart: players.length >= 1, state: room.state });
 }
-function onClose(sock) {
-  const p = sock._player; if (!p) return;
-  const room = p.room; room.players.delete(sock);
+
+// Fully remove a player whose reconnect grace expired (or who left a lobby).
+function dropPlayer(room, p) {
+  room.players.delete(p.sock);
+  if (p.token) room.byToken.delete(p.token);
   if (p.agent && room.sim) room.sim.removeAgent(p.agent);
-  if (room.players.size === 0) { rooms.delete(room.code); return; }
+  if (room.players.size === 0 && room.byToken.size === 0) { rooms.delete(room.code); return; }
   if (room.state === 'playing') {
     if (p.role === 'hunter') endMatch(room, 'hiders');
     else if (humanHiders(room).length === 0 && [...room.players.values()].some(x => x.role === 'hider')) endMatch(room, 'hunter');
   }
   sendLobby(room);
+}
+
+function onClose(sock) {
+  const p = sock._player; if (!p) return;
+  const room = p.room;
+  // mid-match with a body + token: hold the body for a reconnect grace window
+  if (room.state === 'playing' && p.agent && p.agent.alive && p.token) {
+    p.disconnected = true;
+    p.input = { up: 0, down: 0, left: 0, right: 0, shift: 0, dance: 0 };  // freeze in place
+    p.graceTimer = setTimeout(() => { if (p.disconnected) dropPlayer(room, p); }, RECONNECT_GRACE);
+    sendLobby(room);
+    return;
+  }
+  dropPlayer(room, p);
 }
 
 // ---------- main loop ----------
