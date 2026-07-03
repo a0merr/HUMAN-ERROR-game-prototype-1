@@ -12,8 +12,8 @@ import { humanScore, neighborStats } from '../engine/agents.mjs';
 import { collidePillars } from '../engine/geometry.mjs';
 import { Renderer, Particles } from './render.mjs';
 import { Input } from './input.mjs';
-import { Hud } from './hud.mjs';
-import { initAudio, beep, sfx } from './audio.mjs';
+import { Hud, presentClip } from './hud.mjs';
+import { initAudio, beep, sfx, getRecordStream } from './audio.mjs';
 import { ClipRecorder } from './clip.mjs';
 import { fitCanvas } from './viewport.mjs';
 import { makeTouchControls } from './touch.mjs';
@@ -23,7 +23,7 @@ const renderer = new Renderer(cv);
 const particles = new Particles();
 const hud = new Hud();
 const input = new Input().attach();
-const clip = new ClipRecorder(cv, { gameName: 'human-error' });
+const clip = new ClipRecorder(cv, { gameName: 'human-error', getAudioStream: getRecordStream, onSave: presentClip });
 fitCanvas(cv);
 const touch = makeTouchControls({
   onMove: (ix, iy) => input.setMove(ix, iy),

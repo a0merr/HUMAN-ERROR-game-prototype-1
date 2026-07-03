@@ -2,7 +2,21 @@
 // HUMAN ERROR — tiny WebAudio sfx (no assets, generated on the fly)
 // ============================================================
 
-let actx = null, ambient = null;
+let actx = null, ambient = null, master = null, muteGain = null, recDest = null;
+
+// Master graph: every source -> master -> muteGain -> speakers.
+// Clip recording taps `master` (BEFORE muteGain), so muted gameplay still
+// records unmuted audio into exported clips.
+function bus() {
+  if (!actx) return null;
+  if (!master) {
+    master = actx.createGain();
+    muteGain = actx.createGain();
+    master.connect(muteGain);
+    muteGain.connect(actx.destination);
+  }
+  return master;
+}
 
 export function initAudio() {
   if (!actx) { try { actx = new (window.AudioContext || window.webkitAudioContext)(); } catch (e) {} }
@@ -11,16 +25,27 @@ export function initAudio() {
   return actx;
 }
 
+// Audio track for clip exports. Lazy-creates the context so the recorder can
+// wire up before the first user gesture; the track is simply silent until the
+// context resumes.
+export function getRecordStream() {
+  if (!actx) { try { actx = new (window.AudioContext || window.webkitAudioContext)(); } catch (e) { return null; } }
+  if (!recDest) {
+    try { recDest = actx.createMediaStreamDestination(); bus().connect(recDest); } catch (e) { recDest = null; return null; }
+  }
+  return recDest.stream;
+}
+
 // Low surveillance-room tone — a quiet mains hum + electrical buzz so the silence
 // itself reads "we are watching". Started once on the first audio init.
 export function startAmbience() {
   if (!actx || ambient) return;
   try {
     const hum = actx.createOscillator(); hum.type = 'sine'; hum.frequency.value = 52;
-    const hg = actx.createGain(); hg.gain.value = 0.012; hum.connect(hg); hg.connect(actx.destination); hum.start();
+    const hg = actx.createGain(); hg.gain.value = 0.012; hum.connect(hg); hg.connect(bus()); hum.start();
     const buzz = actx.createOscillator(); buzz.type = 'sawtooth'; buzz.frequency.value = 60;
     const bf = actx.createBiquadFilter(); bf.type = 'lowpass'; bf.frequency.value = 190;
-    const bg = actx.createGain(); bg.gain.value = 0.005; buzz.connect(bf); bf.connect(bg); bg.connect(actx.destination); buzz.start();
+    const bg = actx.createGain(); bg.gain.value = 0.005; buzz.connect(bf); bf.connect(bg); bg.connect(bus()); buzz.start();
     ambient = { hum, buzz };
   } catch (e) {}
 }
@@ -35,14 +60,14 @@ function noiseBurst(dur = 0.2, vol = 0.2, freq = 1200, type = 'bandpass') {
   const src = actx.createBufferSource(); src.buffer = buf;
   const f = actx.createBiquadFilter(); f.type = type; f.frequency.value = freq;
   const g = actx.createGain(); g.gain.value = vol;
-  src.connect(f); f.connect(g); g.connect(actx.destination); src.start();
+  src.connect(f); f.connect(g); g.connect(bus()); src.start();
 }
 
 export function beep(freq, dur, type = 'sine', vol = 0.06) {
   if (!actx) return;
   const o = actx.createOscillator(), g = actx.createGain();
   o.type = type; o.frequency.value = freq;
-  o.connect(g); g.connect(actx.destination);
+  o.connect(g); g.connect(bus());
   const t = actx.currentTime;
   g.gain.setValueAtTime(vol, t);
   g.gain.exponentialRampToValueAtTime(0.0001, t + dur);

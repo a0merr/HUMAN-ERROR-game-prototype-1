@@ -8,6 +8,50 @@ import { clamp } from '../engine/math.mjs';
 
 const $ = (id) => document.getElementById(id);
 
+// ---------- clip share overlay ----------
+// Small dismissible card with a looping preview + Share / Download / Dismiss.
+// Used as the ClipRecorder onSave hook by both entries; returns false when the
+// page carries no overlay markup so the recorder falls back to a download.
+let clipUrl = null, clipTimer = null;
+
+function downloadBlob(blob, filename) {
+  try {
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = filename;
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 4000);
+  } catch (e) {}
+}
+
+export function presentClip(blob, filename) {
+  const ov = $('clipOverlay');
+  const vid = $('clipVideo');
+  if (!ov || !vid) return false;
+  if (clipUrl) { try { URL.revokeObjectURL(clipUrl); } catch (e) {} }
+  clipUrl = URL.createObjectURL(blob);
+  vid.src = clipUrl;
+  try { const pl = vid.play(); if (pl && pl.catch) pl.catch(() => {}); } catch (e) {}
+  ov.classList.remove('hidden');
+  const dismiss = () => { clearTimeout(clipTimer); ov.classList.add('hidden'); try { vid.pause(); } catch (e) {} };
+  clearTimeout(clipTimer);
+  clipTimer = setTimeout(dismiss, 8000);   // auto-dismiss so it never blocks play
+  $('clipDismiss').onclick = dismiss;
+  $('clipDownload').onclick = () => { downloadBlob(blob, filename); dismiss(); };
+  $('clipShare').onclick = async () => {
+    clearTimeout(clipTimer);   // user is interacting — don't yank the card away
+    try {
+      const file = new File([blob], filename, { type: blob.type || 'video/webm' });
+      if (navigator.canShare && navigator.canShare({ files: [file] })) {
+        await navigator.share({ files: [file], title: 'HUMAN ERROR', text: 'One of us is real.' });
+        dismiss(); return;
+      }
+    } catch (e) { if (e && e.name === 'AbortError') { dismiss(); return; } }
+    downloadBlob(blob, filename); dismiss();
+  };
+  return true;
+}
+
 export class Hud {
   constructor() {
     this.timer = $('timer');

@@ -41,6 +41,14 @@
   .hidden { display:none !important; }
   .hint { font-size:12px; color:var(--muted); }
   a { color:var(--blue); }
+  /* clip share card */
+  #clipOverlay { position:absolute; right:18px; bottom:18px; z-index:50; width:244px; background:var(--panel);
+    border:1px solid #243149; border-radius:10px; padding:8px; display:flex; flex-direction:column; gap:8px;
+    box-shadow:0 12px 40px rgba(0,0,0,.55); }
+  #clipOverlay video { width:100%; border-radius:6px; display:block; background:#000; }
+  #clipOverlay .clipRow { display:flex; gap:6px; }
+  #clipOverlay button { margin:0; padding:8px 10px; font-size:12px; border-radius:8px; flex:1; }
+  #clipOverlay button.ghost { flex:0 0 auto; }
 </style>
 </head>
 <body>
@@ -97,6 +105,15 @@
     <h1 id="resultTitle">—</h1>
     <h2 id="resultSub"></h2>
     <button id="againBtn">BACK TO LOBBY</button>
+  </div>
+  <!-- CLIP SHARE -->
+  <div id="clipOverlay" class="hidden">
+    <video id="clipVideo" loop muted autoplay playsinline></video>
+    <div class="clipRow">
+      <button id="clipShare">📤 SHARE</button>
+      <button id="clipDownload" class="ghost">💾</button>
+      <button id="clipDismiss" class="ghost">✕</button>
+    </div>
   </div>
 </div>
 

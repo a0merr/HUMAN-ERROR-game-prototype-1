@@ -7,8 +7,9 @@
 import { ARENA, BODY_R, BODY_SHAPES, mapById, SKINS, PALETTE } from '../engine/config.mjs';
 import { clamp, lerpAngle } from '../engine/math.mjs';
 import { collidePillars, clampArena } from '../engine/geometry.mjs';
-import { initAudio, beep, sfx as audioSfx } from './audio.mjs';
+import { initAudio, beep, sfx as audioSfx, getRecordStream } from './audio.mjs';
 import { ClipRecorder } from './clip.mjs';
+import { presentClip } from './hud.mjs';
 import { drawSurveillance } from './style.mjs';
 import { drawFigure } from './figure.mjs';
 import { fitCanvas } from './viewport.mjs';
@@ -18,7 +19,7 @@ const camCode = (s) => { s = Math.max(0, s | 0); const m = (s / 60) | 0, r = s %
 const cv = document.getElementById('game');
 const ctx = cv.getContext('2d');
 const W = cv.width, H = cv.height;
-const clip = new ClipRecorder(cv, { gameName: 'human-error' });
+const clip = new ClipRecorder(cv, { gameName: 'human-error', getAudioStream: getRecordStream, onSave: presentClip });
 const vp = fitCanvas(cv);
 
 const POSE = { IDLE: 0, WALK: 1, DANCE: 2 };
