@@ -371,7 +371,7 @@ function joinRoom(sock, room, name, token) {
   const player = {
     id: nextId++, name: (name || 'Player').slice(0, 14), room, role: 'spectator',
     agent: null, score: 0, stunT: 0, token: token || null, disconnected: false, graceTimer: null,
-    input: { up: 0, down: 0, left: 0, right: 0, shift: 0, dance: 0 }, tagEdge: false, sock,
+    input: { up: 0, down: 0, left: 0, right: 0, shift: 0, dance: 0 }, tagEdge: false, lastTagAt: 0, sock,
   };
   sock._player = player; room.players.set(sock, player);
   if (token) room.byToken.set(token, player);
@@ -412,10 +412,16 @@ function onMessage(sock, msg) {
   else if (msg.t === 'input') {
     const p = sock._player; p.input = msg.k || p.input;
     if (msg.tag) {
-      p.tagEdge = true;
-      // tap-to-tag sends an explicit aim angle (facing normally derives from
-      // movement, which can't express "tag the guy behind me" on a phone)
-      if (Number.isFinite(msg.aim)) p.tagAim = msg.aim;
+      // 250ms server-side cooldown — the instant tag path (clients send tags
+      // outside the 20Hz cadence) must not become a spam channel
+      const now = Date.now();
+      if (!p.lastTagAt || now - p.lastTagAt >= 250) {
+        p.lastTagAt = now;
+        p.tagEdge = true;
+        // tap-to-tag sends an explicit aim angle (facing normally derives from
+        // movement, which can't express "tag the guy behind me" on a phone)
+        if (Number.isFinite(msg.aim)) p.tagAim = msg.aim;
+      }
     }
   }
   else if (msg.t === 'emote') { const p = sock._player; if (p.agent && p.agent.alive) { p.agent.taunt = clamp(msg.e | 0, 0, 3); p.agent.tauntT = 1.6; } }

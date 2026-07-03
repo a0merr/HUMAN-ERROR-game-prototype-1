@@ -157,7 +157,7 @@ addEventListener('keydown', e => {
   const k = e.key.toLowerCase();
   keys[k] = true;
   if ([' ', 'arrowup', 'arrowdown', 'arrowleft', 'arrowright'].includes(k)) e.preventDefault();
-  if (k === ' ' && myRole === 'hunter') tagQueued = true;
+  if (k === ' ' && myRole === 'hunter') sendTagNow();
   if (myRole !== 'spectator' && k >= '1' && k <= '4') { send({ t: 'emote', e: parseInt(k, 10) - 1 }); sfx('taunt'); }
   if (k === 'p') screenshot();
   if (k === 'c') { if (clip.capture('clip')) { feed('🎬 Clip saved'); audioSfx.shutter(); } }
@@ -175,7 +175,7 @@ const touch = makeTouchControls({
   actions: [
     { label: '🎬', onDown: () => { if (clip.capture('clip')) { feed('🎬 Clip saved'); audioSfx.shutter(); } } },
     { label: '😎', onDown: () => { if (myRole !== 'spectator') { send({ t: 'emote', e: 2 }); sfx('taunt'); } } },
-    { label: 'TAG', onDown: () => { if (myRole === 'hunter') tagQueued = true; } },
+    { label: 'TAG', onDown: () => { if (myRole === 'hunter') sendTagNow(); } },
     { label: 'DANCE', hold: true, onDown: () => keys['f'] = true, onUp: () => keys['f'] = false },
     { label: 'BLEND', hold: true, onDown: () => keys['shift'] = true, onUp: () => keys['shift'] = false },
   ],

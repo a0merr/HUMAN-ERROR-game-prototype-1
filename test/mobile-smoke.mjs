@@ -140,11 +140,21 @@ async function phone() {
     await hunter.evaluate(({ cx, cy }) => {
       document.getElementById('game').dispatchEvent(new PointerEvent('pointerdown', { pointerId: 7, clientX: cx, clientY: cy, bubbles: true }));
     }, tap);
+    const countTags = () => hunter.evaluate(() => window.__sent.filter(s => {
+      try { const m = JSON.parse(s); return m.t === 'input' && m.tag === true; } catch (e) { return false; }
+    }).length);
     const tagSent = await hunter.evaluate(() => window.__sent.some(s => {
       try { const m = JSON.parse(s); return m.t === 'input' && m.tag === true && typeof m.aim === 'number'; } catch (e) { return false; }
     }));
     assert(tagSent, 'hunter tap on a body should send an immediate tag input with aim');
-    console.log('TAP-TO-TAG OK — tagSent=%s', tagSent);
+    // instant-path spam guard: a rapid second tap inside the 250ms client
+    // cooldown must not produce a second tag message
+    await hunter.evaluate(({ cx, cy }) => {
+      document.getElementById('game').dispatchEvent(new PointerEvent('pointerdown', { pointerId: 8, clientX: cx, clientY: cy, bubbles: true }));
+    }, tap);
+    const tags = await countTags();
+    assert(tags === 1, 'rapid double-tap should send exactly 1 tag (got ' + tags + ')');
+    console.log('TAP-TO-TAG OK — tagSent=%s spamGuard=%s', tagSent, tags === 1);
   }
 
   await guest.context().close();
