@@ -18,6 +18,7 @@ import { ClipRecorder } from './clip.mjs';
 import { fitCanvas } from './viewport.mjs';
 import { makeTouchControls } from './touch.mjs';
 import { ReplayRecorder, ReplayPlayer } from '../engine/replay.mjs';
+import { save as platformSave } from './platform.mjs';
 
 const cv = document.getElementById('game');
 const renderer = new Renderer(cv);
@@ -236,7 +237,13 @@ input.on('react', () => {
 });
 input.on('decoy', tryAbility);
 input.on('screenshot', () => {
-  try { const a = document.createElement('a'); a.download = 'human-error-' + Date.now() + '.png'; a.href = cv.toDataURL('image/png'); a.click(); } catch (e) {}
+  try {
+    cv.toBlob(async (blob) => {
+      if (!blob) return;
+      const path = await platformSave(blob, 'human-error-' + Date.now() + '.png', 'picture');
+      hud.feed(path ? '📸 Saved: ' + path : '📸 Screenshot saved');
+    }, 'image/png');
+  } catch (e) {}
 });
 input.on('clip', () => { if (clip.capture('clip')) { hud.feed('🎬 Clip saved'); sfx.shutter(); } });
 

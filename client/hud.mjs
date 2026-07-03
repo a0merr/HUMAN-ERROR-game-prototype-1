@@ -5,6 +5,7 @@
 // ============================================================
 
 import { clamp } from '../engine/math.mjs';
+import { save as platformSave, isDesktop } from './platform.mjs';
 
 const $ = (id) => document.getElementById(id);
 
@@ -14,40 +15,46 @@ const $ = (id) => document.getElementById(id);
 // page carries no overlay markup so the recorder falls back to a download.
 let clipUrl = null, clipTimer = null;
 
-function downloadBlob(blob, filename) {
-  try {
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url; a.download = filename;
-    document.body.appendChild(a); a.click(); a.remove();
-    setTimeout(() => URL.revokeObjectURL(url), 4000);
-  } catch (e) {}
+// browser: download; desktop (Tauri): OS Videos dir + "saved to" toast
+async function downloadBlob(blob, filename, statusEl) {
+  const path = await platformSave(blob, filename, 'video');
+  if (path && statusEl) { statusEl.textContent = 'Saved: ' + path; return true; }
+  return !!path;
 }
 
 export function presentClip(blob, filename) {
   const ov = $('clipOverlay');
   const vid = $('clipVideo');
   if (!ov || !vid) return false;
+  const status = $('clipStatus');
+  if (status) status.textContent = '';
   if (clipUrl) { try { URL.revokeObjectURL(clipUrl); } catch (e) {} }
   clipUrl = URL.createObjectURL(blob);
   vid.src = clipUrl;
   try { const pl = vid.play(); if (pl && pl.catch) pl.catch(() => {}); } catch (e) {}
   ov.classList.remove('hidden');
   const dismiss = () => { clearTimeout(clipTimer); ov.classList.add('hidden'); try { vid.pause(); } catch (e) {} };
-  clearTimeout(clipTimer);
-  clipTimer = setTimeout(dismiss, 8000);   // auto-dismiss so it never blocks play
+  const dismissSoon = (ms) => { clearTimeout(clipTimer); clipTimer = setTimeout(dismiss, ms); };
+  dismissSoon(8000);   // auto-dismiss so it never blocks play
   $('clipDismiss').onclick = dismiss;
-  $('clipDownload').onclick = () => { downloadBlob(blob, filename); dismiss(); };
+  $('clipDownload').onclick = async () => {
+    clearTimeout(clipTimer);
+    const toasted = await downloadBlob(blob, filename, status);
+    dismissSoon(toasted ? 4000 : 400);   // leave the saved-path toast readable
+  };
   $('clipShare').onclick = async () => {
     clearTimeout(clipTimer);   // user is interacting — don't yank the card away
-    try {
-      const file = new File([blob], filename, { type: blob.type || 'video/webm' });
-      if (navigator.canShare && navigator.canShare({ files: [file] })) {
-        await navigator.share({ files: [file], title: 'HUMAN ERROR', text: 'One of us is real.' });
-        dismiss(); return;
-      }
-    } catch (e) { if (e && e.name === 'AbortError') { dismiss(); return; } }
-    downloadBlob(blob, filename); dismiss();
+    if (!isDesktop()) {
+      try {
+        const file = new File([blob], filename, { type: blob.type || 'video/webm' });
+        if (navigator.canShare && navigator.canShare({ files: [file] })) {
+          await navigator.share({ files: [file], title: 'HUMAN ERROR', text: 'One of us is real.' });
+          dismiss(); return;
+        }
+      } catch (e) { if (e && e.name === 'AbortError') { dismiss(); return; } }
+    }
+    const toasted = await downloadBlob(blob, filename, status);
+    dismissSoon(toasted ? 4000 : 400);
   };
   return true;
 }

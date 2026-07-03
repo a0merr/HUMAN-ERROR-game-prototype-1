@@ -10,6 +10,7 @@ import { collidePillars, clampArena } from '../engine/geometry.mjs';
 import { initAudio, beep, sfx as audioSfx, getRecordStream } from './audio.mjs';
 import { ClipRecorder } from './clip.mjs';
 import { presentClip } from './hud.mjs';
+import { save as platformSave } from './platform.mjs';
 import { drawSurveillance } from './style.mjs';
 import { drawFigure } from './figure.mjs';
 import { fitCanvas } from './viewport.mjs';
@@ -187,7 +188,13 @@ const touch = makeTouchControls({
   ],
 });
 function screenshot() {
-  try { const a = document.createElement('a'); a.download = 'human-error-' + Date.now() + '.png'; a.href = cv.toDataURL('image/png'); a.click(); feed('📸 Screenshot saved'); } catch (e) {}
+  try {
+    cv.toBlob(async (blob) => {
+      if (!blob) return;
+      const path = await platformSave(blob, 'human-error-' + Date.now() + '.png', 'picture');
+      feed(path ? '📸 Saved: ' + path : '📸 Screenshot saved');
+    }, 'image/png');
+  } catch (e) {}
 }
 function readKeys() {
   return {

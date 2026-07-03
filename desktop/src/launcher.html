@@ -1,0 +1,62 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<title>HUMAN ERROR</title>
+<style>
+  :root { --bg:#0b0f17; --panel:#131a26; --ink:#e8edf5; --muted:#8b97a8; --green:#2bd479; --pink:#ff2e63; --blue:#38bdf8; }
+  * { box-sizing: border-box; }
+  html, body { margin:0; height:100%; background:var(--bg); color:var(--ink);
+    font-family:"Segoe UI",system-ui,sans-serif; user-select:none; overflow:hidden; }
+  #wrap { height:100%; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:18px; text-align:center; }
+  .tag { letter-spacing:.22em; font-size:12px; font-weight:700; color:var(--green); }
+  h1 { font-size:64px; margin:0; font-weight:900; letter-spacing:-.02em; }
+  h1 span { color:var(--pink); }
+  h2 { font-size:18px; color:var(--muted); margin:0 0 10px; font-weight:600; }
+  .btns { display:flex; gap:16px; }
+  button { background:var(--green); color:#052012; border:0; padding:18px 44px; font-size:18px;
+    font-weight:800; border-radius:12px; cursor:pointer; letter-spacing:.04em; font-family:inherit; min-width:220px; }
+  button.ghost { background:var(--panel); color:var(--ink); border:1px solid #243149; }
+  button:hover { filter:brightness(1.1); }
+  button:disabled { opacity:.55; cursor:default; }
+  #status { min-height:20px; font-size:13px; color:var(--muted); }
+  #status.err { color:var(--pink); font-weight:600; }
+  .hint { font-size:12px; color:var(--muted); max-width:480px; line-height:1.5; }
+</style>
+</head>
+<body>
+<div id="wrap">
+  <div class="tag">ONE OF THEM IS REAL.</div>
+  <h1>HUMAN <span>ERROR</span></h1>
+  <h2>Blend in. Act fake. Don't get caught.</h2>
+  <div class="btns">
+    <button id="soloBtn">SOLO</button>
+    <button id="onlineBtn" class="ghost">ONLINE</button>
+  </div>
+  <div id="status"></div>
+  <p class="hint">Solo runs fully offline. Online connects to the public server and drops you into the multiplayer lobby.</p>
+</div>
+<script>
+  var SERVER = '%%GAME_SERVER_URL%%';
+  var status = document.getElementById('status');
+  document.getElementById('soloBtn').addEventListener('click', function () {
+    location.href = 'index.html';
+  });
+  document.getElementById('onlineBtn').addEventListener('click', function () {
+    var btn = this;
+    btn.disabled = true;
+    status.className = ''; status.textContent = 'Checking server…';
+    var ctrl = new AbortController();
+    var timer = setTimeout(function () { ctrl.abort(); }, 6000);
+    fetch(SERVER + '/healthz', { signal: ctrl.signal, cache: 'no-store' })
+      .then(function (r) { if (!r.ok) throw new Error('status ' + r.status); location.href = SERVER + '/'; })
+      .catch(function () {
+        status.className = 'err';
+        status.textContent = "Can't reach the game server (" + SERVER + "). Check your connection and try again — Solo still works offline.";
+        btn.disabled = false;
+      })
+      .finally(function () { clearTimeout(timer); });
+  });
+</script>
+</body>
+</html>
