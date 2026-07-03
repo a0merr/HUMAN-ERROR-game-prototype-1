@@ -99,7 +99,14 @@ function handle(m) {
   else if (m.t === 'lobby') {
     $('lobbyCode').textContent = m.code;
     setShareLink(m.code);
-    $('playerList').innerHTML = m.players.map(p => `<div class="pl"><span>${esc(p.name)}</span><span class="hint">${p.name === myName ? 'you' : ''}</span></div>`).join('');
+    // build with textContent — player names are attacker-controlled, never innerHTML
+    const list = $('playerList'); list.textContent = '';
+    for (const pl of m.players) {
+      const row = document.createElement('div'); row.className = 'pl';
+      const nm = document.createElement('span'); nm.textContent = String(pl.name);
+      const hint = document.createElement('span'); hint.className = 'hint'; hint.textContent = pl.name === myName ? 'you' : '';
+      row.appendChild(nm); row.appendChild(hint); list.appendChild(row);
+    }
     if (m.state !== 'playing') { joinScreen.classList.add('hidden'); lobbyScreen.classList.remove('hidden'); }
   } else if (m.t === 'start') {
     crowdSkin = m.skin || 0; curMapId = m.mapId || 'plaza';
@@ -134,7 +141,7 @@ function handle(m) {
     const iWon = (myRole === 'hider' && m.winner === 'hiders') || (myRole === 'hunter' && m.winner === 'hunter');
     sfx(iWon ? 'win' : 'lose');
     const win = m.winner === 'hunter' ? 'HUNTER WINS' : 'HIDERS SURVIVE';
-    $('resultTitle').innerHTML = win;
+    $('resultTitle').textContent = win;
     $('resultTitle').style.color = m.winner === 'hunter' ? 'var(--pink)' : 'var(--green)';
     let sub = '';
     if (myRole === 'hunter') sub = 'You caught ' + m.score + '.';
@@ -148,7 +155,6 @@ function setRole(r) {
   myRole = r; elRole.className = r;
   elRole.textContent = r === 'hunter' ? 'YOU ARE THE HUNTER' : r === 'hider' ? 'BLEND IN — HIDER' : 'SPECTATOR';
 }
-const esc = (s) => String(s).replace(/[<>&]/g, c => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;' }[c]));
 
 // ---------- input ----------
 const keys = {};
@@ -235,7 +241,16 @@ window.__he = { bodies: () => (snapCur ? snapCur.bodies : []), myId: () => myId,
 
 // ---------- feed ----------
 function feed(msg) { feedItems.unshift({ msg, t: 3 }); if (feedItems.length > 4) feedItems.pop(); renderFeed(); }
-function renderFeed() { elFeed.innerHTML = feedItems.map(f => `<div style="opacity:${Math.max(0, Math.min(1, f.t / 3)).toFixed(2)}">${esc(f.msg)}</div>`).join(''); }
+function renderFeed() {
+  // feed lines can contain player names — textContent only
+  elFeed.textContent = '';
+  for (const f of feedItems) {
+    const d = document.createElement('div');
+    d.style.opacity = Math.max(0, Math.min(1, f.t / 3)).toFixed(2);
+    d.textContent = String(f.msg);
+    elFeed.appendChild(d);
+  }
+}
 
 // ---------- draw ----------
 function roundRect(x, y, w, h, r) { ctx.beginPath(); ctx.moveTo(x + r, y); ctx.arcTo(x + w, y, x + w, y + h, r); ctx.arcTo(x + w, y + h, x, y + h, r); ctx.arcTo(x, y + h, x, y, r); ctx.arcTo(x, y, x + w, y, r); ctx.closePath(); }

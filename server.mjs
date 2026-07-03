@@ -34,7 +34,8 @@ const server = http.createServer((req, res) => {
   // health check for hosting platforms (Render/Railway/Fly/etc.)
   if (url === '/healthz') {
     res.writeHead(200, { 'Content-Type': 'text/plain' });
-    return res.end('ok rooms=' + rooms.size);
+    let socks = 0; for (const n of ipSockets.values()) socks += n;
+    return res.end('ok rooms=' + rooms.size + ' socks=' + socks);
   }
   if (url === '/') url = '/mp.html';
   else if (url === '/solo') url = '/index.html';
@@ -46,6 +47,32 @@ const server = http.createServer((req, res) => {
     res.end(data);
   });
 });
+
+// ---------- hardening limits ----------
+const MAX_FRAME_BYTES = 4096;      // any bigger client frame -> that socket dies
+const MSGS_PER_SEC = 40;           // token bucket per socket; above it, drop
+const RL_STRIKES = 3;              // sustained flooding (1 strike/s) -> close
+const MAX_SOCKETS_PER_IP = 8;
+const MAX_ROOMS_PER_IP = 4;        // concurrently-alive rooms created per IP
+const MAX_ROOMS = 500;
+const LOBBY_IDLE_MS = 10 * 60 * 1000;
+
+const ipSockets = new Map();       // ip -> live upgraded-socket count
+
+function clientIp(req) {
+  const xf = req.headers['x-forwarded-for'];
+  if (typeof xf === 'string' && xf.length) return xf.split(',')[0].trim().slice(0, 64);
+  return (req.socket.remoteAddress || 'unknown').slice(0, 64);
+}
+
+// Strip control/zero-width chars, trim, cap at 16 — every name the server
+// stores or echoes has been through here. (Clients must still render names
+// with textContent; this is defense in depth, not the only line.)
+function sanitizeName(name, id) {
+  let s = String(name == null ? '' : name);
+  s = s.replace(/[\u0000-\u001f\u007f-\u009f\u200b-\u200f\u2028\u2029\ufeff]/g, '').trim().slice(0, 16);
+  return s || ('PLAYER-' + id);
+}
 
 // ---------- minimal WebSocket (RFC6455) ----------
 const WS_GUID = '258EAFA5-E914-47DA-95CA-C5AB0DC85B11';
@@ -70,6 +97,20 @@ const wsCloseFrame = (sock) => { try { sock.write(Buffer.from([0x88, 0])); } cat
 server.on('upgrade', (req, sock) => {
   const key = req.headers['sec-websocket-key'];
   if (!key) { sock.destroy(); return; }
+
+  // per-IP socket cap — a single machine can't hog the whole server
+  const ip = clientIp(req);
+  const live = ipSockets.get(ip) || 0;
+  if (live >= MAX_SOCKETS_PER_IP) { sock.destroy(); return; }
+  ipSockets.set(ip, live + 1);
+  sock._ip = ip;
+  let counted = true;
+  sock.on('close', () => {
+    if (!counted) return; counted = false;
+    const n = (ipSockets.get(ip) || 1) - 1;
+    if (n <= 0) ipSockets.delete(ip); else ipSockets.set(ip, n);
+  });
+
   sock.write(
     'HTTP/1.1 101 Switching Protocols\r\n' +
     'Upgrade: websocket\r\nConnection: Upgrade\r\n' +
@@ -77,29 +118,61 @@ server.on('upgrade', (req, sock) => {
   );
   onConnect(sock);
 
+  // token-bucket rate limit: above MSGS_PER_SEC we drop frames; sustained
+  // flooding earns strikes (max 1/s) and RL_STRIKES strikes closes the socket
+  const rl = { tokens: MSGS_PER_SEC, last: Date.now(), strikes: 0, lastStrike: 0 };
+  const rateOk = () => {
+    const now = Date.now();
+    rl.tokens = Math.min(MSGS_PER_SEC, rl.tokens + (now - rl.last) * (MSGS_PER_SEC / 1000));
+    rl.last = now;
+    if (rl.tokens >= 1) { rl.tokens -= 1; return true; }
+    if (now - rl.lastStrike > 1000) {
+      rl.lastStrike = now;
+      if (++rl.strikes >= RL_STRIKES) { wsCloseFrame(sock); sock.destroy(); }
+    }
+    return false;
+  };
+  const kill = () => { wsCloseFrame(sock); sock.destroy(); };
+
   let buf = Buffer.alloc(0);
   sock.on('data', (chunk) => {
-    buf = Buffer.concat([buf, chunk]);
-    while (true) {
-      if (buf.length < 2) break;
-      const op = buf[0] & 0x0f;
-      const masked = (buf[1] & 0x80) !== 0;
-      let len = buf[1] & 0x7f;
-      let off = 2;
-      if (len === 126) { if (buf.length < 4) break; len = buf.readUInt16BE(2); off = 4; }
-      else if (len === 127) { if (buf.length < 10) break; len = Number(buf.readBigUInt64BE(2)); off = 10; }
-      const need = off + (masked ? 4 : 0) + len;
-      if (buf.length < need) break;
-      let mask = null;
-      if (masked) { mask = buf.slice(off, off + 4); off += 4; }
-      const data = buf.slice(off, off + len);
-      if (mask) for (let i = 0; i < data.length; i++) data[i] ^= mask[i & 3];
-      buf = buf.slice(need);
-      if (op === 8) { wsCloseFrame(sock); sock.destroy(); return; }
-      else if (op === 9) { try { sock.write(Buffer.from([0x8a, 0])); } catch (e) {} }
-      else if (op === 1) { try { onMessage(sock, JSON.parse(data.toString('utf8'))); } catch (e) {} }
-    }
+    // one bad client must never throw into the shared loop — anything
+    // malformed disconnects THIS socket only
+    try {
+      buf = Buffer.concat([buf, chunk]);
+      while (true) {
+        if (buf.length < 2) break;
+        const op = buf[0] & 0x0f;
+        const masked = (buf[1] & 0x80) !== 0;
+        let len = buf[1] & 0x7f;
+        let off = 2;
+        if (len === 126) { if (buf.length < 4) break; len = buf.readUInt16BE(2); off = 4; }
+        else if (len === 127) { if (buf.length < 10) break; len = Number(buf.readBigUInt64BE(2)); off = 10; }
+        if (!(len >= 0) || len > MAX_FRAME_BYTES) { kill(); return; }   // oversized / absurd frame
+        const need = off + (masked ? 4 : 0) + len;
+        if (buf.length < need) break;
+        let mask = null;
+        if (masked) { mask = buf.slice(off, off + 4); off += 4; }
+        const data = buf.slice(off, off + len);
+        if (mask) for (let i = 0; i < data.length; i++) data[i] ^= mask[i & 3];
+        buf = buf.slice(need);
+        if (op === 8) { kill(); return; }
+        else if (op === 9) { try { sock.write(Buffer.from([0x8a, 0])); } catch (e) {} }
+        else if (op === 1) {
+          if (!rateOk()) continue;
+          let msg = null;
+          try { msg = JSON.parse(data.toString('utf8')); } catch (e) { kill(); return; }   // garbage payload
+          if (!msg || typeof msg !== 'object' || typeof msg.t !== 'string') { kill(); return; }
+          try { onMessage(sock, msg); }
+          catch (e) { console.error('client message fault (socket dropped):', e && e.message); kill(); return; }
+        }
+        // other opcodes (binary / continuation / pong) are ignored
+      }
+    } catch (e) { console.error('ws frame fault (socket dropped):', e && e.message); try { sock.destroy(); } catch (e2) {} }
   });
+  // upgraded HTTP sockets are half-open: a client FIN only fires 'end', never
+  // 'close', which would leak the per-IP count and the player's grace timer
+  sock.on('end', () => { try { sock.destroy(); } catch (e) {} });
   sock.on('close', () => onClose(sock));
   sock.on('error', () => onClose(sock));
 });
@@ -132,11 +205,12 @@ function genCode() {
   return c;
 }
 
-function createRoom() {
+function createRoom(creatorIp) {
   const code = genCode();
   const r = {
     code, state: 'lobby', players: new Map(), byToken: new Map(),
     sim: null, timer: MATCH_SECS, mapId: 'plaza',
+    creatorIp: creatorIp || null, touched: Date.now(),
   };
   rooms.set(code, r);
   return r;
@@ -351,6 +425,7 @@ function tick(room, dt) {
 // ---------- connection handlers ----------
 function onConnect(sock) { sock._player = null; }
 function joinRoom(sock, room, name, token) {
+  room.touched = Date.now();
   // reconnect: same token + a body still held within the grace window
   if (token && room.byToken.has(token)) {
     const existing = room.byToken.get(token);
@@ -368,8 +443,9 @@ function joinRoom(sock, room, name, token) {
     return;
   }
 
+  const id = nextId++;
   const player = {
-    id: nextId++, name: (name || 'Player').slice(0, 14), room, role: 'spectator',
+    id, name: sanitizeName(name, id), room, role: 'spectator',
     agent: null, score: 0, stunT: 0, token: token || null, disconnected: false, graceTimer: null,
     input: { up: 0, down: 0, left: 0, right: 0, shift: 0, dance: 0 }, tagEdge: false, lastTagAt: 0, sock,
   };
@@ -390,13 +466,37 @@ function joinRoom(sock, room, name, token) {
     sendLobby(room);
   }
 }
+function roomCapError(sock, ip) {
+  if (rooms.size >= MAX_ROOMS) {
+    wsSend(sock, JSON.stringify({ t: 'error', msg: 'Server is at capacity — try again in a few minutes.' }));
+    return true;
+  }
+  let mine = 0;
+  for (const r of rooms.values()) if (r.creatorIp === ip) mine++;
+  if (mine >= MAX_ROOMS_PER_IP) {
+    wsSend(sock, JSON.stringify({ t: 'error', msg: 'Room limit reached for your connection — reuse an open room.' }));
+    return true;
+  }
+  return false;
+}
+
 function onMessage(sock, msg) {
-  if (msg.t === 'create') { if (sock._player) return; joinRoom(sock, createRoom(), msg.name, msg.token); }
+  // clamp attacker-controlled fields before they reach any storage
+  if (typeof msg.token === 'string') msg.token = msg.token.slice(0, 64); else msg.token = null;
+
+  if (msg.t === 'create') {
+    if (sock._player) return;
+    if (roomCapError(sock, sock._ip)) return;
+    joinRoom(sock, createRoom(sock._ip), msg.name, msg.token);
+  }
   else if (msg.t === 'quick') {
     if (sock._player) return;
     let room = null;
     for (const r of rooms.values()) if (r.public && r.state === 'lobby' && r.players.size < MAX_PLAYERS) { room = r; break; }
-    if (!room) { room = createRoom(); room.public = true; }
+    if (!room) {
+      if (roomCapError(sock, sock._ip)) return;
+      room = createRoom(sock._ip); room.public = true;
+    }
     joinRoom(sock, room, msg.name, msg.token);
   } else if (msg.t === 'join') {
     if (sock._player) return;
@@ -408,9 +508,14 @@ function onMessage(sock, msg) {
     if (!reconnecting && room.players.size >= MAX_PLAYERS) { wsSend(sock, JSON.stringify({ t: 'error', msg: 'Room ' + code + ' is full.' })); return; }
     joinRoom(sock, room, msg.name, msg.token);
   } else if (!sock._player) return;
-  else if (msg.t === 'start') { const room = sock._player.room; if (room.state !== 'playing') startMatch(room); }
+  else if (msg.t === 'start') { const room = sock._player.room; room.touched = Date.now(); if (room.state !== 'playing') startMatch(room); }
   else if (msg.t === 'input') {
-    const p = sock._player; p.input = msg.k || p.input;
+    const p = sock._player;
+    const k = msg.k;
+    // re-shape the input — never store attacker-controlled objects verbatim
+    if (k && typeof k === 'object') {
+      p.input = { up: k.up ? 1 : 0, down: k.down ? 1 : 0, left: k.left ? 1 : 0, right: k.right ? 1 : 0, shift: k.shift ? 1 : 0, dance: k.dance ? 1 : 0 };
+    }
     if (msg.tag) {
       // 250ms server-side cooldown — the instant tag path (clients send tags
       // outside the 20Hz cadence) must not become a spam channel
@@ -427,6 +532,7 @@ function onMessage(sock, msg) {
   else if (msg.t === 'emote') { const p = sock._player; if (p.agent && p.agent.alive) { p.agent.taunt = clamp(msg.e | 0, 0, 3); p.agent.tauntT = 1.6; } }
   else if (msg.t === 'again') {
     const room = sock._player.room;
+    room.touched = Date.now();
     if (room.state === 'over') {
       room.state = 'lobby'; room.sim = null; room.aiHunters = []; room.aiScore = 0; room.replay = null;
       for (const pl of room.players.values()) { pl.role = 'spectator'; pl.agent = null; }
@@ -486,6 +592,24 @@ setInterval(() => {
   const now = Date.now(); const dt = Math.min(0.1, (now - lastTick) / 1000); lastTick = now;
   for (const room of rooms.values()) tick(room, dt);
 }, TICK);
+
+// room hygiene: lobbies idle past LOBBY_IDLE_MS get torn down
+setInterval(() => {
+  const now = Date.now();
+  for (const room of rooms.values()) {
+    if (room.state !== 'lobby') { room.touched = now; continue; }
+    if (now - (room.touched || 0) <= LOBBY_IDLE_MS) continue;
+    for (const s of room.players.keys()) {
+      wsSend(s, JSON.stringify({ t: 'error', msg: 'Room ' + room.code + ' closed (idle).' }));
+      wsCloseFrame(s); try { s.destroy(); } catch (e) {}
+    }
+    rooms.delete(room.code);
+  }
+}, 60_000).unref();
+
+// last-resort crash isolation: log and keep serving every other room
+process.on('uncaughtException', (err) => { console.error('UNCAUGHT (kept alive):', err); });
+process.on('unhandledRejection', (err) => { console.error('UNHANDLED REJECTION (kept alive):', err); });
 
 function lanIPs() {
   const out = [];
