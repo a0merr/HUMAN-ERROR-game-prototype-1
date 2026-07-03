@@ -3,10 +3,48 @@
 // Pure presentation: draws a CrowdSim snapshot. Shared by solo + mp client.
 // ============================================================
 
-import { ARENA, BODY_R, BODY_SHAPES, POSE, PALETTE, SKINS, W, H } from '../engine/config.mjs';
+import { ARENA, BODY_R, BODY_SHAPES, POSE, PALETTE, SKINS, W, H, KILLCAM_TEXT } from '../engine/config.mjs';
 import { clamp } from '../engine/math.mjs';
 import { drawSurveillance } from './style.mjs';
 import { drawFigure } from './figure.mjs';
+
+// ---------- high-visibility tells (colorblind-safe) ----------
+// Persisted toggle: the tell marker gains a white double-ring + bigger emoji +
+// an expanding radial ping — all hue-independent, readable in grayscale.
+let hiVisTells = false;
+try { hiVisTells = localStorage.getItem('humanError.hiVisTells') === '1'; } catch (e) {}
+export function setHighVisTells(v) {
+  hiVisTells = !!v;
+  try { localStorage.setItem('humanError.hiVisTells', hiVisTells ? '1' : '0'); } catch (e) {}
+}
+export function getHighVisTells() { return hiVisTells; }
+
+// The TELL marker — the product. A body mid-"slip" (acting too human) gets a
+// loud pulsing callout so the joke reads at a glance / on a stream clip.
+// Shared by the solo renderer and the MP client so both HUD toggles behave
+// identically. `phase` is any steadily-increasing per-agent value.
+export function drawTell(ctx, x, y, ico, phase) {
+  const pulse = 0.5 + 0.5 * Math.sin(phase * 16);
+  ctx.save(); ctx.translate(x, y);
+  ctx.shadowColor = PALETTE.pink; ctx.shadowBlur = 12 + pulse * 6;   // glow survives downscaling into clips/thumbnails
+  ctx.globalAlpha = 0.55 + 0.4 * pulse; ctx.strokeStyle = PALETTE.pink; ctx.lineWidth = 3;
+  ctx.beginPath(); ctx.arc(0, -2, 16 + pulse * 5, 0, Math.PI * 2); ctx.stroke();
+  if (hiVisTells) {
+    ctx.shadowBlur = 0;
+    ctx.globalAlpha = 0.95; ctx.strokeStyle = '#ffffff'; ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.arc(0, -2, 22 + pulse * 5, 0, Math.PI * 2); ctx.stroke();
+    ctx.globalAlpha = 0.8;
+    ctx.beginPath(); ctx.arc(0, -2, 27 + pulse * 5, 0, Math.PI * 2); ctx.stroke();
+    const ping = (phase * 1.3) % 1;   // brief expanding radial flash
+    ctx.globalAlpha = (1 - ping) * 0.7; ctx.lineWidth = 2.5;
+    ctx.beginPath(); ctx.arc(0, -2, 14 + ping * 36, 0, Math.PI * 2); ctx.stroke();
+  }
+  ctx.globalAlpha = 1; ctx.shadowBlur = 6;
+  ctx.font = (hiVisTells ? '22px' : '16px') + ' "Segoe UI Emoji", Segoe UI';
+  ctx.textAlign = 'center';
+  ctx.fillText(ico, 0, hiVisTells ? -34 : -27);
+  ctx.restore();
+}
 
 export class Renderer {
   constructor(canvas) {
@@ -35,18 +73,9 @@ export class Renderer {
       darkCol: isHunter ? '#0a1422' : skin.dark,
       isHunter,
     });
-    // TELL marker — the product. A body mid-"slip" (acting too human) gets a
-    // loud, pulsing callout so the joke reads at a glance / on a stream clip.
     if (a.slipping && a.slip) {
       const ico = { sprint: '💨', flinch: '😱', overdance: '🤪', bunch: '👀' }[a.slip] || '⚠️';
-      const pulse = 0.5 + 0.5 * Math.sin(a.animPhase * 16);
-      ctx.save(); ctx.translate(a.x, a.y);
-      ctx.shadowColor = PALETTE.pink; ctx.shadowBlur = 12 + pulse * 6;   // glow survives downscaling into clips/thumbnails
-      ctx.globalAlpha = 0.55 + 0.4 * pulse; ctx.strokeStyle = PALETTE.pink; ctx.lineWidth = 3;
-      ctx.beginPath(); ctx.arc(0, -2, 16 + pulse * 5, 0, Math.PI * 2); ctx.stroke();
-      ctx.globalAlpha = 1; ctx.shadowBlur = 6; ctx.font = '16px "Segoe UI Emoji", Segoe UI'; ctx.textAlign = 'center';
-      ctx.fillText(ico, 0, -27);
-      ctx.restore();
+      drawTell(ctx, a.x, a.y, ico, a.animPhase);
     }
     // taunt emote bubble (multiplayer flavor / clip surface)
     if (a.tauntT > 0) {
@@ -172,7 +201,7 @@ export class Renderer {
       const a = clamp((kc.t - 0.45) / 0.3, 0, 1);
       ctx.save(); ctx.globalAlpha = a; ctx.textAlign = 'center';
       ctx.fillStyle = PALETTE.pink; ctx.font = '900 64px Segoe UI'; ctx.fillText('HUMAN ERROR', W / 2, H / 2 - 8);
-      ctx.fillStyle = PALETTE.ink; ctx.font = '700 20px Segoe UI'; ctx.fillText(kc.label || 'CAUGHT — too human.', W / 2, H / 2 + 30);
+      ctx.fillStyle = PALETTE.ink; ctx.font = '700 20px Segoe UI'; ctx.fillText(kc.label || KILLCAM_TEXT, W / 2, H / 2 + 30);
       ctx.restore();
     }
   }

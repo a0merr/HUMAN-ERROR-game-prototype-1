@@ -4,7 +4,7 @@
 // All crowd/hunter/glitch behavior comes from the shared engine.
 // ============================================================
 
-import { ARENA, WAVE, MAPS, ALL_PERKS, PALETTE } from '../engine/config.mjs';
+import { ARENA, WAVE, MAPS, ALL_PERKS, PALETTE, KILLCAM_TEXT } from '../engine/config.mjs';
 import { clamp } from '../engine/math.mjs';
 import { CrowdSim } from '../engine/sim.mjs';
 import { makeHunter, updateHunter, seesAgent, maxPlayerLock } from '../engine/hunter.mjs';
@@ -13,7 +13,8 @@ import { collidePillars } from '../engine/geometry.mjs';
 import { Renderer, Particles } from './render.mjs';
 import { Input } from './input.mjs';
 import { Hud, presentClip } from './hud.mjs';
-import { initAudio, beep, sfx, getRecordStream } from './audio.mjs';
+import { initAudio, beep, sfx, getRecordStream, setMuted, isMuted } from './audio.mjs';
+import { setHighVisTells, getHighVisTells } from './render.mjs';
 import { ClipRecorder } from './clip.mjs';
 import { fitCanvas } from './viewport.mjs';
 import { makeTouchControls } from './touch.mjs';
@@ -247,6 +248,19 @@ input.on('screenshot', () => {
 });
 input.on('clip', () => { if (clip.capture('clip')) { hud.feed('🎬 Clip saved'); sfx.shutter(); } });
 
+// ---- settings corner: mute (M) + high-visibility tells ----
+const muteBtn = document.getElementById('muteBtn');
+const tellsBtn = document.getElementById('tellsBtn');
+function renderSettings() {
+  if (muteBtn) { muteBtn.textContent = isMuted() ? '🔇' : '🔊'; muteBtn.classList.toggle('on', isMuted()); }
+  if (tellsBtn) { tellsBtn.textContent = getHighVisTells() ? '◉' : '◎'; tellsBtn.classList.toggle('on', getHighVisTells()); }
+}
+function toggleMute() { setMuted(!isMuted()); renderSettings(); }
+if (muteBtn) muteBtn.addEventListener('click', toggleMute);
+if (tellsBtn) tellsBtn.addEventListener('click', () => { setHighVisTells(!getHighVisTells()); renderSettings(); });
+addEventListener('keydown', (e) => { if (e.key.toLowerCase() === 'm' && !e.repeat) toggleMute(); });
+renderSettings();
+
 // Q-slot ability — decoy drop or blink dash, whichever perk is held.
 function tryAbility() {
   if (!running || !player || decoyCD > 0) return;
@@ -338,7 +352,7 @@ function endGame(reason) {
   for (const h of sim.hunters) h.lock = 0;
   hud.setVignette(0);
   pendingEnd = { reason };
-  killcam = { x: player.x, y: player.y, t: 0, dur: 2.4, label: 'CAUGHT — too human.' };
+  killcam = { x: player.x, y: player.y, t: 0, dur: 2.4, label: KILLCAM_TEXT };
   particles.burst(player.x, player.y, PALETTE.pink, 58);
   particles.burst(player.x, player.y, PALETTE.ink, 18);
   shake = 24; fxFlash = 1;

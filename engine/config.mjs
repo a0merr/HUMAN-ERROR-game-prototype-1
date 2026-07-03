@@ -166,5 +166,8 @@ export const GLITCHES = [
   { type: 'spin',    name: '🌀 DIZZY SPELL',    sub: 'SPACE — spin in place!',        window: 1.4, t: 2.0 },
 ];
 
+// Kill-cam caption — one constant so solo and multiplayer say the same thing.
+export const KILLCAM_TEXT = "YOU'RE OUT — too human.";
+
 export const POSE = { IDLE: 'idle', WALK: 'walk', DANCE: 'dance' };
 export const KIND = { NPC: 'npc', BOT: 'bot', HUMAN: 'human', HUNTER: 'hunter' };

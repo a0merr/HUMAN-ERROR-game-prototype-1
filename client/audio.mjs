@@ -4,6 +4,11 @@
 
 let actx = null, ambient = null, master = null, muteGain = null, recDest = null;
 
+// Mute state is read at module load so the graph is born muted when the user
+// left it that way — ambience never gets a frame of sound on boot.
+let muted = false;
+try { muted = localStorage.getItem('humanError.muted') === '1'; } catch (e) {}
+
 // Master graph: every source -> master -> muteGain -> speakers.
 // Clip recording taps `master` (BEFORE muteGain), so muted gameplay still
 // records unmuted audio into exported clips.
@@ -12,11 +17,19 @@ function bus() {
   if (!master) {
     master = actx.createGain();
     muteGain = actx.createGain();
+    muteGain.gain.value = muted ? 0 : 1;
     master.connect(muteGain);
     muteGain.connect(actx.destination);
   }
   return master;
 }
+
+export function setMuted(v) {
+  muted = !!v;
+  try { localStorage.setItem('humanError.muted', muted ? '1' : '0'); } catch (e) {}
+  if (muteGain) muteGain.gain.value = muted ? 0 : 1;
+}
+export function isMuted() { return muted; }
 
 export function initAudio() {
   if (!actx) { try { actx = new (window.AudioContext || window.webkitAudioContext)(); } catch (e) {} }

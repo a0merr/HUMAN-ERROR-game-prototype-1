@@ -4,15 +4,16 @@
 // engine's map layouts, skins and palette so visuals match the server sim.
 // ============================================================
 
-import { ARENA, BODY_R, BODY_SHAPES, mapById, SKINS, PALETTE } from '../engine/config.mjs';
+import { ARENA, BODY_R, BODY_SHAPES, mapById, SKINS, PALETTE, KILLCAM_TEXT } from '../engine/config.mjs';
 import { clamp, lerpAngle } from '../engine/math.mjs';
 import { collidePillars, clampArena } from '../engine/geometry.mjs';
-import { initAudio, beep, sfx as audioSfx, getRecordStream } from './audio.mjs';
+import { initAudio, beep, sfx as audioSfx, getRecordStream, setMuted, isMuted } from './audio.mjs';
 import { ClipRecorder } from './clip.mjs';
 import { presentClip } from './hud.mjs';
 import { save as platformSave } from './platform.mjs';
 import { drawSurveillance } from './style.mjs';
 import { drawFigure } from './figure.mjs';
+import { drawTell, setHighVisTells, getHighVisTells } from './render.mjs';
 import { fitCanvas } from './viewport.mjs';
 import { makeTouchControls } from './touch.mjs';
 const camCode = (s) => { s = Math.max(0, s | 0); const m = (s / 60) | 0, r = s % 60; return (m < 10 ? '0' : '') + m + ':' + (r < 10 ? '0' : '') + r; };
@@ -171,6 +172,18 @@ addEventListener('keydown', e => {
 });
 addEventListener('keyup', e => { keys[e.key.toLowerCase()] = false; });
 
+// ---- settings corner: mute (M) + high-visibility tells ----
+const muteBtn = $('muteBtn'), tellsBtn = $('tellsBtn');
+function renderSettings() {
+  if (muteBtn) { muteBtn.textContent = isMuted() ? '🔇' : '🔊'; muteBtn.classList.toggle('on', isMuted()); }
+  if (tellsBtn) { tellsBtn.textContent = getHighVisTells() ? '◉' : '◎'; tellsBtn.classList.toggle('on', getHighVisTells()); }
+}
+function toggleMute() { setMuted(!isMuted()); renderSettings(); }
+if (muteBtn) muteBtn.addEventListener('click', toggleMute);
+if (tellsBtn) tellsBtn.addEventListener('click', () => { setHighVisTells(!getHighVisTells()); renderSettings(); });
+addEventListener('keydown', e => { if (e.key.toLowerCase() === 'm' && !e.repeat) toggleMute(); });
+renderSettings();
+
 // touch controls — analog stick mapped to the same directional keys the 20Hz
 // sender + predictor already read; action buttons mirror Space/F/emote/clip.
 const DZ = 0.34;   // stick dead-zone before a direction registers
@@ -282,14 +295,7 @@ function drawPerson(b, t) {
   // TELL marker — a bot mid-slip (sent as b.sl: s/f/o/b) gets a pulsing callout
   if (b.sl) {
     const ico = { s: '💨', f: '😱', o: '🤪', b: '👀' }[b.sl] || '⚠️';
-    const pulse = 0.5 + 0.5 * Math.sin((t * 16) + b.id);
-    ctx.save(); ctx.translate(b.x, b.y);
-    ctx.shadowColor = '#ff2e63'; ctx.shadowBlur = 12 + pulse * 6;   // glow survives downscaling into clips/thumbnails
-    ctx.globalAlpha = 0.55 + 0.4 * pulse; ctx.strokeStyle = '#ff2e63'; ctx.lineWidth = 3;
-    ctx.beginPath(); ctx.arc(0, -2, 16 + pulse * 5, 0, Math.PI * 2); ctx.stroke();
-    ctx.globalAlpha = 1; ctx.shadowBlur = 6; ctx.font = '16px "Segoe UI Emoji", Segoe UI'; ctx.textAlign = 'center';
-    ctx.fillText(ico, 0, -27);
-    ctx.restore();
+    drawTell(ctx, b.x, b.y, ico, t + b.id * 0.0625);
   }
 }
 
@@ -391,7 +397,7 @@ function frame(ts) {
       const a = Math.min(1, (killcam.t - 0.45) / 0.3);
       ctx.save(); ctx.globalAlpha = a; ctx.textAlign = 'center';
       ctx.fillStyle = '#ff2e63'; ctx.font = '900 60px Segoe UI'; ctx.fillText('HUMAN ERROR', W / 2, H / 2 - 8);
-      ctx.fillStyle = '#e8edf5'; ctx.font = '700 20px Segoe UI'; ctx.fillText("YOU'RE OUT — too human.", W / 2, H / 2 + 30);
+      ctx.fillStyle = '#e8edf5'; ctx.font = '700 20px Segoe UI'; ctx.fillText(KILLCAM_TEXT, W / 2, H / 2 + 30);
       ctx.restore();
     }
     if (killcam.t >= killcam.dur) killcam = null;
