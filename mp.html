@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8" />
-<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
 <title>HUMAN ERROR — Multiplayer</title>
 <style>
   :root { --bg:#0b0f17; --panel:#131a26; --ink:#e8edf5; --muted:#8b97a8; --green:#2bd479; --pink:#ff2e63; --blue:#38bdf8; --amber:#f5b942; }
@@ -81,6 +81,10 @@
   <div id="lobbyScreen" class="overlay hidden">
     <div class="tag">ROOM</div>
     <div class="code" id="lobbyCode">—</div>
+    <div class="row">
+      <button id="shareBtn" class="ghost">📋 COPY INVITE LINK</button>
+    </div>
+    <p class="hint" id="shareUrl"></p>
     <h2>Lobby</h2>
     <div class="players" id="playerList"></div>
     <button id="startBtn">START MATCH</button>

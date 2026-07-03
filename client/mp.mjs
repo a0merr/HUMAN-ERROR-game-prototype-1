@@ -11,12 +11,15 @@ import { initAudio, beep, sfx as audioSfx } from './audio.mjs';
 import { ClipRecorder } from './clip.mjs';
 import { drawSurveillance } from './style.mjs';
 import { drawFigure } from './figure.mjs';
+import { fitCanvas } from './viewport.mjs';
+import { makeTouchControls } from './touch.mjs';
 const camCode = (s) => { s = Math.max(0, s | 0); const m = (s / 60) | 0, r = s % 60; return (m < 10 ? '0' : '') + m + ':' + (r < 10 ? '0' : '') + r; };
 
 const cv = document.getElementById('game');
 const ctx = cv.getContext('2d');
 const W = cv.width, H = cv.height;
 const clip = new ClipRecorder(cv, { gameName: 'human-error' });
+const vp = fitCanvas(cv);
 
 const POSE = { IDLE: 0, WALK: 1, DANCE: 2 };
 // must match server.mjs movement tunables for prediction to track
@@ -94,6 +97,7 @@ function handle(m) {
   }
   else if (m.t === 'lobby') {
     $('lobbyCode').textContent = m.code;
+    setShareLink(m.code);
     $('playerList').innerHTML = m.players.map(p => `<div class="pl"><span>${esc(p.name)}</span><span class="hint">${p.name === myName ? 'you' : ''}</span></div>`).join('');
     if (m.state !== 'playing') { joinScreen.classList.add('hidden'); lobbyScreen.classList.remove('hidden'); }
   } else if (m.t === 'start') {
@@ -103,6 +107,7 @@ function handle(m) {
     feedItems = []; renderFeed(); snapPrev = snapCur = null; killcam = null; flash = 0; shake = 0; particles = [];
     myStun = prevStun = 0; hidersLeft = -1; pred = null; predTs = 0;
     feed('Map: ' + mapById(curMapId).name + ' · Skin: ' + (SKINS[crowdSkin] ? SKINS[crowdSkin].id : '—')); sfx('start');
+    touch.show();
   } else if (m.t === 'snap') {
     const now = Date.now(); if (now - lastStore > 2000) { lastStore = now; localStorage.setItem('he.ts', String(now)); }
     snapPrev = snapCur; snapCur = m; snapTime = performance.now();
@@ -123,6 +128,7 @@ function handle(m) {
     if (cl) { feed('🎬 Clip saved'); audioSfx.shutter(); }
   } else if (m.t === 'over') {
     localStorage.removeItem('he.room');   // match ended — don't auto-rejoin into it
+    touch.hide();
     resultScreen.classList.remove('hidden');
     const iWon = (myRole === 'hider' && m.winner === 'hiders') || (myRole === 'hunter' && m.winner === 'hunter');
     sfx(iWon ? 'win' : 'lose');
@@ -156,19 +162,75 @@ addEventListener('keydown', e => {
   if (k === 'c') { if (clip.capture('clip')) { feed('🎬 Clip saved'); audioSfx.shutter(); } }
 });
 addEventListener('keyup', e => { keys[e.key.toLowerCase()] = false; });
+
+// touch controls — analog stick mapped to the same directional keys the 20Hz
+// sender + predictor already read; action buttons mirror Space/F/emote/clip.
+const DZ = 0.34;   // stick dead-zone before a direction registers
+const touch = makeTouchControls({
+  onMove: (ix, iy) => {
+    keys['arrowright'] = ix > DZ; keys['arrowleft'] = ix < -DZ;
+    keys['arrowdown'] = iy > DZ; keys['arrowup'] = iy < -DZ;
+  },
+  actions: [
+    { label: '🎬', onDown: () => { if (clip.capture('clip')) { feed('🎬 Clip saved'); audioSfx.shutter(); } } },
+    { label: '😎', onDown: () => { if (myRole !== 'spectator') { send({ t: 'emote', e: 2 }); sfx('taunt'); } } },
+    { label: 'TAG', onDown: () => { if (myRole === 'hunter') tagQueued = true; } },
+    { label: 'DANCE', hold: true, onDown: () => keys['f'] = true, onUp: () => keys['f'] = false },
+    { label: 'BLEND', hold: true, onDown: () => keys['shift'] = true, onUp: () => keys['shift'] = false },
+  ],
+});
 function screenshot() {
   try { const a = document.createElement('a'); a.download = 'human-error-' + Date.now() + '.png'; a.href = cv.toDataURL('image/png'); a.click(); feed('📸 Screenshot saved'); } catch (e) {}
 }
-setInterval(() => {
-  if (!ws || ws.readyState !== 1 || myRole === 'spectator') return;
-  const k = {
+function readKeys() {
+  return {
     up: keys['w'] || keys['arrowup'] ? 1 : 0, down: keys['s'] || keys['arrowdown'] ? 1 : 0,
     left: keys['a'] || keys['arrowleft'] ? 1 : 0, right: keys['d'] || keys['arrowright'] ? 1 : 0,
     shift: keys['shift'] ? 1 : 0, dance: keys['f'] ? 1 : 0,
   };
-  send({ t: 'input', k, tag: tagQueued });
+}
+// Instant tag path — bypasses the 20Hz tick so the most feel-critical action
+// carries zero queue latency. The next scheduled tick won't re-send it.
+let lastTagSent = 0;
+function sendTagNow(aim) {
+  const now = performance.now();
+  if (now - lastTagSent < 250) return;
+  lastTagSent = now;
+  tagQueued = false;   // suppress the duplicate on the next scheduled tick
+  const m = { t: 'input', k: readKeys(), tag: true };
+  if (typeof aim === 'number' && isFinite(aim)) m.aim = aim;
+  send(m);
+}
+// tap-to-tag — on touch devices the hunter taps a body directly: nearest body
+// within TAP_TAG_R logical px of the tap gets aimed at + tagged instantly.
+// The TAG button stays as a fallback. Left half belongs to the joystick zone
+// and buttons capture their own taps, so this only sees open-canvas taps.
+const TAP_TAG_R = 40;
+cv.addEventListener('pointerdown', (e) => {
+  if (!touch.isTouch || myRole !== 'hunter' || !snapCur || killcam) return;
+  const pt = vp.toLogical(e.clientX, e.clientY);
+  const me = snapCur.bodies.find(b => b.id === myId);
+  if (!me) return;
+  let best = null, bd = TAP_TAG_R;
+  for (const b of snapCur.bodies) {
+    if (b.id === myId) continue;
+    const d = Math.hypot(b.x - pt.x, b.y - pt.y);
+    if (d < bd) { bd = d; best = b; }
+  }
+  if (!best) return;
+  const mx = pred ? pred.x : me.x, my = pred ? pred.y : me.y;
+  const aim = Math.atan2(best.y - my, best.x - mx);
+  if (pred) pred.facing = aim;
+  sendTagNow(aim);
+});
+setInterval(() => {
+  if (!ws || ws.readyState !== 1 || myRole === 'spectator') return;
+  send({ t: 'input', k: readKeys(), tag: tagQueued });
   tagQueued = false;
 }, 1000 / 20);
+
+// test hook — read-only view for the automated smokes (no gameplay use)
+window.__he = { bodies: () => (snapCur ? snapCur.bodies : []), myId: () => myId, role: () => myRole };
 
 // ---------- feed ----------
 function feed(msg) { feedItems.unshift({ msg, t: 3 }); if (feedItems.length > 4) feedItems.pop(); renderFeed(); }
@@ -339,13 +401,49 @@ $('joinBtn').addEventListener('click', () => {
   connect({ t: 'join', name: curName(), room });
 });
 $('roomInput').addEventListener('keydown', e => { if (e.key === 'Enter') $('joinBtn').click(); });
+// ---------- invite link (close the share loop) ----------
+let inviteUrl = '';
+function setShareLink(code) {
+  inviteUrl = location.origin + '/?room=' + encodeURIComponent(code);
+  const el = $('shareUrl'); if (el) el.textContent = inviteUrl;
+}
+$('shareBtn').addEventListener('click', async () => {
+  if (!inviteUrl) return;
+  // native share sheet on mobile; clipboard everywhere else
+  try {
+    if (navigator.share) { await navigator.share({ title: 'HUMAN ERROR', text: 'One of us is real. Join my room:', url: inviteUrl }); return; }
+  } catch (e) { if (e && e.name === 'AbortError') return; }
+  try { await navigator.clipboard.writeText(inviteUrl); $('shareBtn').textContent = '✅ LINK COPIED'; setTimeout(() => { $('shareBtn').textContent = '📋 COPY INVITE LINK'; }, 1600); }
+  catch (e) { const el = $('shareUrl'); if (el) el.textContent = inviteUrl + '  (select + copy)'; }
+});
 $('startBtn').addEventListener('click', () => send({ t: 'start' }));
 $('againBtn').addEventListener('click', () => { send({ t: 'again' }); resultScreen.classList.add('hidden'); lobbyScreen.classList.remove('hidden'); });
+
+// ---------- deep links ----------
+// The clip-driven funnel: a shared link drops the viewer straight into a room
+// (?room=CODE) or a fresh Quick Play match (?quick) with one tap — no typing.
+const deepLinked = (function deepLink() {
+  try {
+    const p = new URLSearchParams(location.search);
+    const room = (p.get('room') || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+    const nm = localStorage.getItem('he.name') || '';
+    if (nm) $('nameInput').value = nm;
+    if (room) {
+      $('roomInput').value = room;
+      $('connStatus').textContent = 'Joining room ' + room + '…';
+      initAudio(); connect({ t: 'join', name: curName(), room });
+      return true;
+    }
+    if (p.has('quick')) { initAudio(); connect({ t: 'quick', name: curName() }); return true; }
+  } catch (e) {}
+  return false;
+})();
 
 // ---------- auto-reconnect on reload ----------
 // If we were recently in a room (same browser, persistent token), rejoin it.
 // The server resumes our body + role if the match is still inside the grace window.
 (function autoRejoin() {
+  if (deepLinked) return;   // an explicit link wins over a stale rejoin
   try {
     const room = localStorage.getItem('he.room');
     const ts = +localStorage.getItem('he.ts') || 0;

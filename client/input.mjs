@@ -26,6 +26,12 @@ export class Input {
 
   on(name, fn) { this.handlers[name] = fn; return this; }
 
+  // Touch hooks — let the on-screen controls drive the same intent/actions.
+  setMove(ix, iy) { this.move.ix = ix; this.move.iy = iy; }
+  setSlow(v) { this.touchSlow = !!v; }
+  setDance(v) { this.touchDance = !!v; }
+  trigger(name) { const h = this.handlers[name]; if (h) h(); }
+
   _fire(k, e) {
     const h = this.handlers;
     if (k === 'enter' && h.enter) h.enter(e);
@@ -45,8 +51,10 @@ export class Input {
     if (k['d'] || k['arrowright']) ix += 1;
     if (k['w'] || k['arrowup']) iy -= 1;
     if (k['s'] || k['arrowdown']) iy += 1;
-    const slow = !!k['shift'];
+    // analog touch stick adds in; applyHumanIntent normalizes direction
+    ix += this.move.ix; iy += this.move.iy;
+    const slow = !!k['shift'] || this.touchSlow;
     const speed = slow ? 58 : (sprintPerk ? 175 : 140);
-    return { ix, iy, slow, dance: !!k['f'], speed };
+    return { ix, iy, slow, dance: !!k['f'] || this.touchDance, speed };
   }
 }

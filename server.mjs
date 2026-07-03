@@ -183,7 +183,7 @@ function startMatch(room) {
     const fp = freePoint(sim.pillars, sim.rng); agent.x = fp.x; agent.y = fp.y;
     agent.skin = Math.max(0, room.skin);
     p.role = role; p.agent = agent; p.stunT = 0; p.score = 0;
-    p.input = { up: 0, down: 0, left: 0, right: 0, shift: 0, dance: 0 }; p.tagEdge = false;
+    p.input = { up: 0, down: 0, left: 0, right: 0, shift: 0, dance: 0 }; p.tagEdge = false; p.tagAim = undefined;
   });
   if (!humanHunt) spawnAiHunter(room);
 
@@ -271,7 +271,11 @@ function tick(room, dt) {
       ? { ix: 0, iy: 0, slow: false, dance: false, speed }
       : { ix, iy, slow: !!inp.shift, dance: !isHunter && !!inp.dance, speed };
     sim.applyHumanIntent(p.agent, dt, intent);
-    if (isHunter && p.tagEdge) { p.tagEdge = false; doTag(room, p); }
+    if (isHunter && p.tagEdge) {
+      p.tagEdge = false;
+      if (p.tagAim !== undefined) { p.agent.facing = p.tagAim; p.tagAim = undefined; }
+      doTag(room, p);
+    }
   }
   sim.stepCrowd(dt);
 
@@ -376,7 +380,15 @@ function onMessage(sock, msg) {
     joinRoom(sock, room, msg.name, msg.token);
   } else if (!sock._player) return;
   else if (msg.t === 'start') { const room = sock._player.room; if (room.state !== 'playing') startMatch(room); }
-  else if (msg.t === 'input') { const p = sock._player; p.input = msg.k || p.input; if (msg.tag) p.tagEdge = true; }
+  else if (msg.t === 'input') {
+    const p = sock._player; p.input = msg.k || p.input;
+    if (msg.tag) {
+      p.tagEdge = true;
+      // tap-to-tag sends an explicit aim angle (facing normally derives from
+      // movement, which can't express "tag the guy behind me" on a phone)
+      if (Number.isFinite(msg.aim)) p.tagAim = msg.aim;
+    }
+  }
   else if (msg.t === 'emote') { const p = sock._player; if (p.agent && p.agent.alive) { p.agent.taunt = clamp(msg.e | 0, 0, 3); p.agent.tauntT = 1.6; } }
   else if (msg.t === 'again') {
     const room = sock._player.room;

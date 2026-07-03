@@ -15,6 +15,8 @@ import { Input } from './input.mjs';
 import { Hud } from './hud.mjs';
 import { initAudio, beep, sfx } from './audio.mjs';
 import { ClipRecorder } from './clip.mjs';
+import { fitCanvas } from './viewport.mjs';
+import { makeTouchControls } from './touch.mjs';
 
 const cv = document.getElementById('game');
 const renderer = new Renderer(cv);
@@ -22,6 +24,17 @@ const particles = new Particles();
 const hud = new Hud();
 const input = new Input().attach();
 const clip = new ClipRecorder(cv, { gameName: 'human-error' });
+fitCanvas(cv);
+const touch = makeTouchControls({
+  onMove: (ix, iy) => input.setMove(ix, iy),
+  actions: [
+    { label: '🎬', onDown: () => input.trigger('clip') },
+    { label: 'Q', onDown: () => input.trigger('decoy') },
+    { label: 'REACT', onDown: () => input.trigger('react') },
+    { label: 'DANCE', hold: true, onDown: () => input.setDance(true), onUp: () => input.setDance(false) },
+    { label: 'BLEND', hold: true, onDown: () => input.setSlow(true), onUp: () => input.setSlow(false) },
+  ],
+});
 
 let sim = null, player = null;
 let wave = 1, waveTime = 0, running = false, betweenWaves = false;
@@ -84,10 +97,12 @@ function beginWave() {
   hud.hideGlitch();
   hud.setWave('WAVE ' + wave);
   hud.setTimerLabel('SURVIVE · ' + n + (n > 1 ? ' HUNTERS' : ' HUNTER'));
+  touch.show();
 }
 
 function clearWave() {
   running = false; betweenWaves = true; score += 100;
+  touch.hide();
   if (hasPerk('veteran')) { score += 60; hud.feed('Veteran bonus +60'); }
   combo = 0; comboT = 0; hud.setCombo(0);
   let pool = ALL_PERKS.filter(p => !perks.has(p.id));
@@ -133,6 +148,7 @@ function startTutorial() {
   suspicion = 0; shake = 0; fxFlash = 0; fxDanger = 0; combo = 0; hud.setCombo(0);
   tutorial = { step: 0, t: 0, stepT: 0, moved: 0, shiftT: 0, px: player.x, py: player.y };
   hud.setWave('TRAINING'); hud.setTimerLabel('CAM-00'); hud.setTimer('—'); hud.setSuspicion(0); hud.hideGlitch();
+  touch.show();
   enterTutStep();
 }
 function enterTutStep() {
@@ -283,6 +299,7 @@ function resolveEvents() {
 function endGame(reason) {
   if (!running) return;
   running = false;
+  touch.hide();
   for (const h of sim.hunters) h.lock = 0;
   hud.setVignette(0);
   pendingEnd = { reason };
