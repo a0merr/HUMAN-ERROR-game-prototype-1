@@ -6,6 +6,7 @@
 
 import { CrowdSim } from '../engine/sim.mjs';
 import { makeHunter, updateHunter, maxPlayerLock } from '../engine/hunter.mjs';
+import { ReplayRecorder, ReplayPlayer, REPLAY_VERSION } from '../engine/replay.mjs';
 
 function assert(cond, msg) { if (!cond) { console.error('FAIL:', msg); process.exit(1); } }
 
@@ -61,6 +62,66 @@ function assert(cond, msg) { if (!cond) { console.error('FAIL:', msg); process.e
   const bx = b.agents.map(p => p.x.toFixed(3)).join(',');
   assert(ax === bx, 'determinism: identical seed must produce identical spawns');
   console.log('determinism OK — %d agents reproducible', a.agents.length);
+}
+
+// ---- replay: record a 30s solo run, re-simulate, byte-identical positions ----
+{
+  const seed = 987654321, mapId = 'plaza', wave = 3, hunterN = 2, lockSp = 0.93;
+  const spawn = { x: 480, y: 505 };
+  const npcCount = 46, botCount = 4, dt = 1 / 60;
+
+  // live run — mirrors the solo client's fixed-step loop exactly
+  const sim = new CrowdSim({ seed, mapId, npcCount, botCount });
+  sim.lockSpeed = lockSp;
+  sim.buildCrowd();
+  const player = sim.addHuman({ role: 'hider', x: spawn.x, y: spawn.y });
+  sim.player = player;
+  sim.hunters = [];
+  for (let i = 0; i < hunterN; i++) sim.hunters.push(makeHunter(i, hunterN, sim.rng, wave));
+
+  const rec = new ReplayRecorder();
+  rec.begin({ mode: 'solo', seed, mapId, npcCount, botCount, dt, solo: { wave, hunters: hunterN, lockSpeed: lockSp, spawn } });
+
+  let caught = false;
+  for (let t = 0; t < 1800 && !caught; t++) {
+    const slow = t % 120 < 60;
+    const intent = { ix: Math.sin(t / 40), iy: Math.cos(t / 55), slow, dance: t % 300 > 260, speed: slow ? 58 : 140 };
+    if (t === 300) {   // one-shot event path (decoy drop) must replay too
+      sim.decoys.push({ x: player.x, y: player.y, t: 5, isDecoy: true, strong: false });
+      rec.event(t, { k: 'decoy', d: [player.x, player.y, 5, 0] });
+    }
+    rec.frame(t, { [player.id]: intent });
+    sim.events.length = 0;
+    sim.stepGlitch(dt);
+    sim.applyHumanIntent(player, dt, intent);
+    sim.stepCrowd(dt);
+    for (const h of sim.hunters) updateHunter(h, dt, sim);
+    for (const e of sim.events) {
+      if (e.type === 'catchPlayer') { for (const h of sim.hunters) h.lock = 0; caught = true; break; }
+      if (e.type === 'popBot') { if (e.agent.alive !== false) sim.removeAgent(e.agent); }
+      else if (e.type === 'popDecoy') { const i = sim.decoys.indexOf(e.decoy); if (i >= 0) sim.decoys.splice(i, 1); e.hunter.target = null; }
+    }
+  }
+
+  const json = rec.end({ reason: caught ? 'caught' : 'time' });
+  const wire = JSON.stringify(json);   // round-trip like localStorage / the wire would
+  assert(wire.length < 200_000, 'replay: 30s solo run should stay small, got ' + wire.length + ' bytes');
+
+  const rp = new ReplayPlayer(JSON.parse(wire));
+  rp.runToEnd();
+
+  const posStr = (s) => s.agents.map(a => a.id + ':' + a.x + ',' + a.y + ',' + a.facing + ',' + a.pose).join('|');
+  const huntStr = (hs) => hs.map(h => h.x + ',' + h.y + ',' + h.facing + ',' + h.lock).join('|');
+  assert(posStr(sim) === posStr(rp.sim), 'replay: re-simulated agent positions must be byte-identical');
+  assert(huntStr(sim.hunters) === huntStr(rp.sim.hunters), 'replay: re-simulated hunter states must be byte-identical');
+  assert(rp.caught === caught, 'replay: outcome (caught) must match the live run');
+
+  // version gate: a mismatched replay must refuse to play
+  let refused = false;
+  try { new ReplayPlayer({ ...json, v: REPLAY_VERSION + 1 }); } catch (e) { refused = true; }
+  assert(refused, 'replay: mismatched REPLAY_VERSION must be refused');
+
+  console.log('replay OK — %d ticks, %d bytes, caught=%s, byte-identical re-sim', json.ticks, wire.length, caught);
 }
 
 console.log('\nALL HEADLESS TESTS PASSED');

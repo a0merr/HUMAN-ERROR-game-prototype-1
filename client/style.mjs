@@ -91,12 +91,19 @@ export function drawSurveillance(ctx, W, H, opts = {}) {
   const corner = (cx, cy, sx, sy) => { ctx.beginPath(); ctx.moveTo(cx, cy + sy * b); ctx.lineTo(cx, cy); ctx.lineTo(cx + sx * b, cy); ctx.stroke(); };
   corner(m, m, 1, 1); corner(W - m, m, -1, 1); corner(m, H - m, 1, -1); corner(W - m, H - m, -1, -1);
 
-  // REC + cam id (top-left, under the bracket)
+  // REC + cam id (top-left, under the bracket) — replay mode swaps the badge
   const blink = (Math.sin(time * 6) > -0.2);
-  if (opts.live !== false && blink) { ctx.fillStyle = '#ff2e3e'; ctx.beginPath(); ctx.arc(m + 16, m + 30, 5, 0, Math.PI * 2); ctx.fill(); }
-  ctx.fillStyle = phos;
-  ctx.fillText('REC', m + 28, m + 35);
-  ctx.fillText(opts.cam || 'CAM-01', m + 70, m + 35);
+  if (opts.replay) {
+    ctx.fillStyle = '#38bdf8';
+    ctx.fillText('▶ REPLAY', m + 12, m + 35);
+    ctx.fillStyle = phos;
+    ctx.fillText(opts.cam || 'CAM-01', m + 92, m + 35);
+  } else {
+    if (opts.live !== false && blink) { ctx.fillStyle = '#ff2e3e'; ctx.beginPath(); ctx.arc(m + 16, m + 30, 5, 0, Math.PI * 2); ctx.fill(); }
+    ctx.fillStyle = phos;
+    ctx.fillText('REC', m + 28, m + 35);
+    ctx.fillText(opts.cam || 'CAM-01', m + 70, m + 35);
+  }
 
   // timecode (top-right)
   ctx.textAlign = 'right';
@@ -105,8 +112,10 @@ export function drawSurveillance(ctx, W, H, opts = {}) {
 
   // feed status (bottom-left)
   ctx.font = '700 11px "Consolas", monospace';
-  ctx.fillStyle = 'rgba(57,255,157,0.7)';
-  ctx.fillText(danger > 0.5 ? '◉ SUBJECT FLAGGED' : '◉ LIVE FEED · BEHAVIORAL SCAN', m + 14, H - m - 14);
+  ctx.fillStyle = opts.replay ? 'rgba(56,189,248,0.75)' : 'rgba(57,255,157,0.7)';
+  ctx.fillText(
+    opts.replay ? '▶ ARCHIVED FOOTAGE · RE-SIMULATION' : (danger > 0.5 ? '◉ SUBJECT FLAGGED' : '◉ LIVE FEED · BEHAVIORAL SCAN'),
+    m + 14, H - m - 14);
 
   ctx.shadowBlur = 0;
   ctx.restore();

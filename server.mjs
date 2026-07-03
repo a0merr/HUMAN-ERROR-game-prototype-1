@@ -18,6 +18,7 @@ import { clamp, dist, lerpAngle } from './engine/math.mjs';
 import { CrowdSim } from './engine/sim.mjs';
 import { freePoint } from './engine/geometry.mjs';
 import { makeHunter, updateHunter } from './engine/hunter.mjs';
+import { ReplayRecorder } from './engine/replay.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PORT = process.env.PORT || 8080;
@@ -169,6 +170,7 @@ function startMatch(room) {
   sim.buildCrowd();
   room.sim = sim;
   room.aiHunters = []; room.aiScore = 0;
+  const roster = [];   // join order matters — the replay re-adds humans identically
 
   // Role assignment that never strands a lone player in an empty lobby:
   //  - 2+ humans  -> one human Hunter, the rest hiders (human-vs-human)
@@ -184,8 +186,17 @@ function startMatch(room) {
     agent.skin = Math.max(0, room.skin);
     p.role = role; p.agent = agent; p.stunT = 0; p.score = 0;
     p.input = { up: 0, down: 0, left: 0, right: 0, shift: 0, dance: 0 }; p.tagEdge = false; p.tagAim = undefined;
+    roster.push({ id: p.id, role });
   });
   if (!humanHunt) spawnAiHunter(room);
+
+  // record the match for the deterministic replay attached to the 'over' msg
+  room.replay = new ReplayRecorder();
+  room.replay.begin({
+    mode: 'mp', seed: sim.seed, mapId: map.id, npcCount: MP_NPCS, botCount: MP_BOTS,
+    dt: TICK / 1000, mp: { roster, ai: room.aiHunters.length },
+  });
+  room.repTick = 0;
 
   room.state = 'playing';
   broadcast(room, { t: 'start', skin: room.skin, mapId: map.id, ai: room.aiHunters.length });
@@ -217,6 +228,7 @@ function doTag(room, hunter) {
   const isBot = target.kind === 'bot';
   const owner = isBot ? null : [...room.players.values()].find(p => p.agent === target);
   const who = isBot ? 'a dumb-human bot' : (owner ? owner.name : 'a human');
+  if (room.replay) room.replay.event(room.repTick, { k: 'cut', id: target.id, ph: 0 });
   sim.removeAgent(target);
   hunter.score = (hunter.score || 0) + 1;
   broadcast(room, { t: 'event', msg: hunter.name + (isBot ? ' caught ' : ' CAUGHT ') + who + '!' });
@@ -231,6 +243,7 @@ function resolveAiCatch(room, e) {
   if (!a || a.alive === false) return;
   const owner = e.type === 'catchHider' ? [...room.players.values()].find(p => p.agent === a) : null;
   const who = e.type === 'popBot' ? 'a dumb-human bot' : (owner ? owner.name : 'a human');
+  if (room.replay) room.replay.event(room.repTick, { k: 'cut', id: a.id, ph: 1 });
   sim.removeAgent(a);
   for (const h of room.aiHunters) if (h.target === a) { h.target = null; h.lock = 0; }
   room.aiScore = (room.aiScore || 0) + 1;
@@ -244,7 +257,13 @@ function endMatch(room, winner) {
   room.state = 'over';
   const hunter = theHunter(room);
   const score = hunter ? hunter.score : (room.aiScore || 0);
-  broadcast(room, { t: 'over', winner, score });
+  // attach the deterministic replay (a few KB of inputs) unless it ballooned
+  let replay = null;
+  if (room.replay) {
+    try { const r = room.replay.end({ winner, score }); if (JSON.stringify(r).length <= 400_000) replay = r; } catch (e) {}
+    room.replay = null;
+  }
+  broadcast(room, replay ? { t: 'over', winner, score, replay } : { t: 'over', winner, score });
 }
 
 function tick(room, dt) {
@@ -258,6 +277,7 @@ function tick(room, dt) {
   if (g) broadcast(room, { t: 'glitch', name: g.name });
 
   // apply human inputs, then advance the shared crowd
+  if (room.replay) room.replay.tickDt(room.repTick, dt);
   for (const p of room.players.values()) {
     if (!p.agent || !p.agent.alive) continue;
     if (p.stunT > 0) p.stunT = Math.max(0, p.stunT - dt);
@@ -270,10 +290,16 @@ function tick(room, dt) {
     const intent = (p.stunT > 0)
       ? { ix: 0, iy: 0, slow: false, dance: false, speed }
       : { ix, iy, slow: !!inp.shift, dance: !isHunter && !!inp.dance, speed };
+    // effective (post-stun) intent — the replay needs no stun/tag rules of its own
+    if (room.replay) room.replay.frame(room.repTick, { [p.agent.id]: intent });
     sim.applyHumanIntent(p.agent, dt, intent);
     if (isHunter && p.tagEdge) {
       p.tagEdge = false;
-      if (p.tagAim !== undefined) { p.agent.facing = p.tagAim; p.tagAim = undefined; }
+      if (p.tagAim !== undefined) {
+        p.agent.facing = p.tagAim;
+        if (room.replay) room.replay.event(room.repTick, { k: 'face', id: p.agent.id, a: p.tagAim, ph: 0 });
+        p.tagAim = undefined;
+      }
       doTag(room, p);
     }
   }
@@ -311,6 +337,8 @@ function tick(room, dt) {
       f: Math.round(h.facing * 100) / 100, p: 1, ph: 0,
     });
   }
+  if (room.replay) room.repTick++;
+
   const anyHumanHiders = [...room.players.values()].some(p => p.role === 'hider');
   const hunter = theHunter(room);
   broadcast(room, {
@@ -351,6 +379,7 @@ function joinRoom(sock, room, name, token) {
   // drop-in: a fresh player joining a live match enters immediately as a hider
   // (no "waiting" screen, no spectating until next round)
   if (room.state === 'playing' && room.sim) {
+    if (room.replay) room.replay.event(room.repTick, { k: 'join', id: player.id, role: 'hider', ph: 'j' });
     const agent = room.sim.addHuman({ role: 'hider' });
     agent.id = player.id; agent.skin = Math.max(0, room.skin || 0);
     const fp = freePoint(room.sim.pillars, room.sim.rng); agent.x = fp.x; agent.y = fp.y;
@@ -393,7 +422,7 @@ function onMessage(sock, msg) {
   else if (msg.t === 'again') {
     const room = sock._player.room;
     if (room.state === 'over') {
-      room.state = 'lobby'; room.sim = null; room.aiHunters = []; room.aiScore = 0;
+      room.state = 'lobby'; room.sim = null; room.aiHunters = []; room.aiScore = 0; room.replay = null;
       for (const pl of room.players.values()) { pl.role = 'spectator'; pl.agent = null; }
       sendLobby(room);
     }
@@ -408,7 +437,10 @@ function sendLobby(room) {
 function dropPlayer(room, p) {
   room.players.delete(p.sock);
   if (p.token) room.byToken.delete(p.token);
-  if (p.agent && room.sim) room.sim.removeAgent(p.agent);
+  if (p.agent && room.sim) {
+    if (room.replay && p.agent.alive) room.replay.event(room.repTick, { k: 'cut', id: p.agent.id, ph: 'j' });
+    room.sim.removeAgent(p.agent);
+  }
   if (room.players.size === 0 && room.byToken.size === 0) { rooms.delete(room.code); return; }
   if (room.state === 'playing') {
     if (p.role === 'hunter') {
@@ -416,6 +448,7 @@ function dropPlayer(room, p) {
       const hidersAlive = [...room.players.values()].some(x => x.role === 'hider' && x.agent && x.agent.alive);
       if (room.sim && hidersAlive) {
         if (!room.aiHunters) { room.aiHunters = []; room.aiScore = 0; }
+        if (room.replay) room.replay.event(room.repTick, { k: 'ai', ph: 'j' });
         spawnAiHunter(room);
         broadcast(room, { t: 'event', msg: 'Hunter bailed — an AI Hunter takes over!' });
       } else endMatch(room, 'hiders');

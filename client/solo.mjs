@@ -17,6 +17,7 @@ import { initAudio, beep, sfx, getRecordStream } from './audio.mjs';
 import { ClipRecorder } from './clip.mjs';
 import { fitCanvas } from './viewport.mjs';
 import { makeTouchControls } from './touch.mjs';
+import { ReplayRecorder, ReplayPlayer } from '../engine/replay.mjs';
 
 const cv = document.getElementById('game');
 const renderer = new Renderer(cv);
@@ -35,6 +36,12 @@ const touch = makeTouchControls({
     { label: 'BLEND', hold: true, onDown: () => input.setSlow(true), onUp: () => input.setSlow(false) },
   ],
 });
+
+// Fixed-step simulation (60 Hz). Determinism is load-bearing: the replay
+// system re-simulates from recorded inputs, so the live sim must advance in
+// exact 1/60 steps too (rendering stays per-rAF).
+const STEP = 1 / 60;
+let rec = null, recTick = 0;   // replay recorder for the current wave
 
 let sim = null, player = null;
 let wave = 1, waveTime = 0, running = false, betweenWaves = false;
@@ -82,14 +89,23 @@ function startGame() {
 
 function beginWave() {
   const map = MAPS[(wave - 1) % MAPS.length];
-  sim = new CrowdSim({ seed: (Date.now() ^ (wave * 2654435761)) >>> 0, mapId: map.id, npcCount: WAVE.npcCount, botCount: WAVE.botCount });
+  const seed = (Date.now() ^ (wave * 2654435761)) >>> 0;
+  const spawn = { x: ARENA.x + ARENA.w / 2, y: ARENA.y + ARENA.h - 55 };
+  sim = new CrowdSim({ seed, mapId: map.id, npcCount: WAVE.npcCount, botCount: WAVE.botCount });
   sim.lockSpeed = lockSpeed();
   sim.buildCrowd();
-  player = sim.addHuman({ role: 'hider', x: ARENA.x + ARENA.w / 2, y: ARENA.y + ARENA.h - 55 });
+  player = sim.addHuman({ role: 'hider', x: spawn.x, y: spawn.y });
   sim.player = player;
   const n = huntersForWave(wave);
   sim.hunters = [];
   for (let i = 0; i < n; i++) sim.hunters.push(makeHunter(i, n, sim.rng, wave));
+
+  // record this wave — becomes humanError.lastReplay if it ends in a death
+  rec = new ReplayRecorder(); recTick = 0;
+  rec.begin({
+    mode: 'solo', seed, mapId: map.id, npcCount: WAVE.npcCount, botCount: WAVE.botCount, dt: STEP,
+    solo: { wave, hunters: n, lockSpeed: lockSpeed(), spawn },
+  });
 
   waveTime = WAVE.secs; suspicion = 0; running = true; betweenWaves = false;
   shake = 0; killcam = null; pendingEnd = null;
@@ -102,6 +118,7 @@ function beginWave() {
 
 function clearWave() {
   running = false; betweenWaves = true; score += 100;
+  rec = null;   // survived — only deaths are worth replaying
   touch.hide();
   if (hasPerk('veteran')) { score += 60; hud.feed('Veteran bonus +60'); }
   combo = 0; comboT = 0; hud.setCombo(0);
@@ -213,6 +230,7 @@ input.on('enter', () => {
 input.on('react', () => {
   if (!running || !sim.glitch || player.reacted) return;
   player.reacted = true; player.reacting = true; player.reactT = Math.max(0.2, sim.glitch.t);
+  if (rec) rec.event(recTick, { k: 'react', rt: player.reactT });
   if (sim.glitch.t > sim.glitch.t0 - sim.glitch.window) stats.glitchHit++;
   sfx.react();
 });
@@ -228,12 +246,14 @@ function tryAbility() {
   if (hasPerk('decoy')) {
     const life = hasPerk('magnet') ? 7 : 4;
     sim.decoys.push({ x: player.x, y: player.y, t: life, isDecoy: true, strong: hasPerk('magnet') });
+    if (rec) rec.event(recTick, { k: 'decoy', d: [player.x, player.y, life, hasPerk('magnet') ? 1 : 0] });
     decoyCD = 12; sfx.decoy(); shake = Math.max(shake, 5); hud.feed('Decoy dropped');
   } else if (hasPerk('blink')) {
     const a = player.facing, hop = 84;
     player.x = clamp(player.x + Math.cos(a) * hop, ARENA.x + 12, ARENA.x + ARENA.w - 12);
     player.y = clamp(player.y + Math.sin(a) * hop, ARENA.y + 12, ARENA.y + ARENA.h - 12);
     collidePillars(player, sim.pillars);
+    if (rec) rec.event(recTick, { k: 'blink', p: [player.x, player.y] });
     decoyCD = 7; sfx.decoy(); shake = Math.max(shake, 4); particles.burst(player.x, player.y, PALETTE.blue, 14); hud.feed('Blink!');
   }
 }
@@ -299,6 +319,14 @@ function resolveEvents() {
 function endGame(reason) {
   if (!running) return;
   running = false;
+  // stash the death for /solo?replay=1 (cap ~200 KB so localStorage stays sane)
+  if (rec) {
+    try {
+      const json = JSON.stringify(rec.end({ reason, wave, score }));
+      if (json.length <= 200_000) localStorage.setItem('humanError.lastReplay', json);
+    } catch (e) {}
+    rec = null;
+  }
   touch.hide();
   for (const h of sim.hunters) h.lock = 0;
   hud.setVignette(0);
@@ -345,16 +373,29 @@ function showEndScreen() {
 }
 
 // ---- main loop ----
-let last = 0;
+// rAF drives rendering; the sim advances in fixed 1/60 steps (see STEP above).
+let last = 0, acc = 0;
 function frame(ts) {
   try { tick(ts); } catch (err) { console.error('HUMAN ERROR loop fault:', err); }
   requestAnimationFrame(frame);
 }
 function tick(ts) {
-  const dt = Math.min(0.05, (ts - last) / 1000 || 0); last = ts;
+  const frameDt = Math.min(0.1, (ts - last) / 1000 || 0); last = ts;
 
-  if (tutorial) { stepTutorial(dt, ts); return; }
+  if (tutorial) { stepTutorial(Math.min(0.05, frameDt), ts); return; }
 
+  acc += frameDt;
+  let n = 0;
+  while (acc >= STEP && n < 6) { stepGame(STEP); acc -= STEP; n++; }
+  if (n === 6) acc = 0;   // spiral-of-death guard on very slow frames
+
+  if (sim) renderer.render(sim, {
+    player, perks, killcam, shake, particles: particles.list, labelPlayer: true,
+    maxLock: maxPlayerLock(sim.hunters, player),
+    surveil: { time: ts / 1000, cam: 'CAM-0' + Math.min(wave, 9), code: camCode(totalTime), flash: fxFlash, danger: fxDanger },
+  });
+}
+function stepGame(dt) {
   if (running) {
     waveTime -= dt; totalTime += dt;
     if (decoyCD > 0) decoyCD = Math.max(0, decoyCD - dt);
@@ -373,6 +414,7 @@ function tick(ts) {
       if (!sim.glitch) { hud.hideGlitch(); if (preG && hasPerk('adren')) adrenT = 4; }   // adrenaline surge
 
       const intent = input.intent({ sprintPerk: hasPerk('sprint') });
+      if (rec) rec.frame(recTick, { [player.id]: intent });
       sim.applyHumanIntent(player, dt, intent);
       // footstep dust when moving at human speed (not the slow NPC blend-walk) —
       // a visual reminder that fast = obviously human
@@ -392,6 +434,7 @@ function tick(ts) {
       prevSlipNear = slipNear;
       for (const h of sim.hunters) { updateHunter(h, dt, sim); if (!running) break; }
       resolveEvents();
+      recTick++;
       if (running) updateSuspicion(dt);
 
       hud.setSuspicion(suspicion);
@@ -407,12 +450,53 @@ function tick(ts) {
   fxFlash = Math.max(0, fxFlash - dt * 1.6);
   if (!running) fxDanger = Math.max(0, fxDanger - dt);
   hud.stepFeed(dt);
+}
 
-  if (sim) renderer.render(sim, {
-    player, perks, killcam, shake, particles: particles.list, labelPlayer: true,
-    maxLock: maxPlayerLock(sim.hunters, player),
-    surveil: { time: ts / 1000, cam: 'CAM-0' + Math.min(wave, 9), code: camCode(totalTime), flash: fxFlash, danger: fxDanger },
+// ---- replay watch mode (/solo?replay=1) ----
+// Re-simulates your last death from the recorded input stream through the
+// normal renderer. Input is disabled; Space restarts, Esc exits to live play.
+function startWatch() {
+  input.detach();
+  touch.hide();
+  hud.hideOverlays();
+  let rp = null;
+  function load() {
+    try {
+      const raw = localStorage.getItem('humanError.lastReplay');
+      if (!raw) { hud.feed('No replay saved yet — play (and get caught) first.'); return null; }
+      return new ReplayPlayer(JSON.parse(raw));
+    } catch (e) { hud.feed('Replay unavailable: ' + e.message); return null; }
+  }
+  rp = load();
+  hud.setWave('REPLAY');
+  hud.setTimerLabel(rp ? 'WAVE ' + rp.data.solo.wave + ' · SPACE RESTART · ESC EXIT' : 'NO REPLAY');
+  hud.setTimer('—'); hud.setSuspicion(0);
+  addEventListener('keydown', (e) => {
+    if (e.key === ' ') { e.preventDefault(); rp = load(); }
+    else if (e.key === 'Escape') { location.href = location.pathname; }
   });
+  let wl = 0, wacc = 0;
+  function wframe(ts) {
+    const fdt = Math.min(0.1, (ts - wl) / 1000 || 0); wl = ts;
+    if (rp && !rp.done) {
+      wacc += fdt;
+      let n = 0;
+      while (rp && !rp.done && wacc >= rp.dtFor(rp.tick) && n < 6) { wacc -= rp.dtFor(rp.tick); rp.step(); n++; }
+      if (n === 6) wacc = 0;
+      hud.setTimer(Math.ceil((rp.data.ticks - rp.tick) * rp.data.dt));
+    }
+    if (rp) renderer.render(rp.sim, {
+      player: rp.player, perks: new Set(), killcam: null, shake: 0, particles: particles.list,
+      labelPlayer: true, maxLock: maxPlayerLock(rp.sim.hunters, rp.player),
+      surveil: {
+        time: ts / 1000, cam: 'CAM-0' + Math.min(rp.data.solo.wave, 9),
+        code: camCode(rp.tick * rp.data.dt), flash: 0,
+        danger: rp.done && rp.caught ? 0.7 : 0, replay: true,
+      },
+    });
+    requestAnimationFrame(wframe);
+  }
+  requestAnimationFrame(wframe);
 }
 
 // ---- boot ----
@@ -425,7 +509,12 @@ function start() {
   try { taught = !!localStorage.getItem('humanError.taught'); } catch (e) {}
   if (taught) startGame(); else startTutorial();
 }
-document.getElementById('startBtn').addEventListener('click', start);
-document.getElementById('againBtn').addEventListener('click', start);
-hud.setMeta(metaHtml());
-requestAnimationFrame(frame);
+const watchMode = new URLSearchParams(location.search).get('replay') === '1';
+if (watchMode) {
+  startWatch();
+} else {
+  document.getElementById('startBtn').addEventListener('click', start);
+  document.getElementById('againBtn').addEventListener('click', start);
+  hud.setMeta(metaHtml());
+  requestAnimationFrame(frame);
+}
